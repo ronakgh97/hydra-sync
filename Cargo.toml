@@ -1,0 +1,11 @@
+[package]
+name = "hydra-sync"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "hydra_sync"
+path = "src/lib.rs"
+
+[dependencies]
+tokio = { version = "1.52.3", features = ["full"] }
