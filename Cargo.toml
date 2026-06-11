@@ -9,6 +9,7 @@ path = "src/lib.rs"
 
 [dependencies]
 tokio = { version = "1.52.3", features = ["full"] }
+wincode = "0.5.5"
 aes-gcm = "0.11.0-rc.4"
 anyhow = "1.0.102"
 rand = "0.10.1"
