@@ -10,12 +10,12 @@ pub struct ProducerClient {
 }
 
 impl ProducerClient {
-    pub async fn connect(addr: SocketAddr, session_id: &[u8], session_key: [u8; 32]) -> Result<Self> {
+    pub async fn connect_producer(addr: SocketAddr, session_id: &[u8; 64], session_key: [u8; 32]) -> Result<Self> {
         let mut stream = TcpStream::connect(addr).await?;
         stream.set_nodelay(true)?;
 
         let transport_key = protocol::perform_client_handshake(&mut stream).await?;
-        let mut mem_pool = Vec::with_capacity(1024);
+        let mut mem_pool = Vec::with_capacity(1024 * 1024 * 2);
         protocol::write_join_frame(&mut stream, Role::Producer, session_id, &transport_key, &mut mem_pool).await?;
 
         Ok(Self { stream, session_key, mem_pool })
@@ -33,12 +33,12 @@ pub struct ConsumerClient {
 }
 
 impl ConsumerClient {
-    pub async fn connect(addr: SocketAddr, session_id: &[u8], session_key: [u8; 32]) -> Result<Self> {
+    pub async fn connect_consumer(addr: SocketAddr, session_id: &[u8; 64], session_key: [u8; 32]) -> Result<Self> {
         let mut stream = TcpStream::connect(addr).await?;
         stream.set_nodelay(true)?;
 
         let transport_key = protocol::perform_client_handshake(&mut stream).await?;
-        let mut mem_pool = Vec::with_capacity(1024);
+        let mut mem_pool = Vec::with_capacity(1024 * 1024 * 2);
         protocol::write_join_frame(&mut stream, Role::Consumer, session_id, &transport_key, &mut mem_pool).await?;
 
         Ok(Self { stream, session_key, mem_pool })
