@@ -1,1 +1,1 @@
-**hydra-sync** is a `one-to-many` SPMC relay network library
+**hydra-sync** is a `one-to-many` SPMC light-weight zero-copy relay network library

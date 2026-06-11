@@ -1,4 +1,4 @@
-mod crypto;
-mod server;
-mod client;
-mod session;
+pub mod crypto;
+pub mod server;
+pub mod client;
+pub mod session;
