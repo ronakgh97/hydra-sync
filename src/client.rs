@@ -3,10 +3,13 @@ use crate::protocol::{
 };
 use anyhow::Result;
 use std::net::SocketAddr;
+use tokio::io::{BufReader, BufWriter};
 use tokio::net::TcpStream;
+use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 
 pub struct ProducerClient {
-    stream: TcpStream,
+    buf_reader: BufReader<OwnedReadHalf>,
+    buf_writer: BufWriter<OwnedWriteHalf>,
     session_key: [u8; 32],
     mem_pool: Vec<u8>,
 }
@@ -17,13 +20,16 @@ impl ProducerClient {
         session_id: &[u8; 64],
         session_key: [u8; 32],
     ) -> Result<Self> {
-        let mut stream = TcpStream::connect(addr).await?;
+        let stream = TcpStream::connect(addr).await?;
         stream.set_nodelay(true)?;
 
-        let transport_key = perform_client_handshake(&mut stream).await?;
-        let mut mem_pool = Vec::with_capacity(1024 * 1024 * 2);
+        let (reader, writer) = stream.into_split();
+        let mut writer = BufWriter::new(writer);
+        let mut reader = BufReader::new(reader);
+        let transport_key = perform_client_handshake(&mut reader, &mut writer).await?;
+        let mut mem_pool = Vec::with_capacity(1024 * 1024 * 18);
         write_join_frame(
-            &mut stream,
+            &mut writer,
             Role::Producer,
             session_id,
             &transport_key,
@@ -32,7 +38,8 @@ impl ProducerClient {
         .await?;
 
         Ok(Self {
-            stream,
+            buf_reader: reader,
+            buf_writer: writer,
             session_key,
             mem_pool,
         })
@@ -40,7 +47,7 @@ impl ProducerClient {
 
     pub async fn broadcast(&mut self, data: &[u8]) -> Result<()> {
         write_encrypted_frame(
-            &mut self.stream,
+            &mut self.buf_writer,
             data,
             &self.session_key,
             &mut self.mem_pool,
@@ -50,7 +57,8 @@ impl ProducerClient {
 }
 
 pub struct ConsumerClient {
-    stream: TcpStream,
+    buf_reader: BufReader<OwnedReadHalf>,
+    buf_writer: BufWriter<OwnedWriteHalf>,
     session_key: [u8; 32],
     mem_pool: Vec<u8>,
 }
@@ -61,13 +69,16 @@ impl ConsumerClient {
         session_id: &[u8; 64],
         session_key: [u8; 32],
     ) -> Result<Self> {
-        let mut stream = TcpStream::connect(addr).await?;
+        let stream = TcpStream::connect(addr).await?;
         stream.set_nodelay(true)?;
+        let (reader, writer) = stream.into_split();
+        let mut writer = BufWriter::new(writer);
+        let mut reader = BufReader::new(reader);
 
-        let transport_key = perform_client_handshake(&mut stream).await?;
-        let mut mem_pool = Vec::with_capacity(1024 * 1024 * 2);
+        let transport_key = perform_client_handshake(&mut reader, &mut writer).await?;
+        let mut mem_pool = Vec::with_capacity(1024 * 1024 * 18);
         write_join_frame(
-            &mut stream,
+            &mut writer,
             Role::Consumer,
             session_id,
             &transport_key,
@@ -76,7 +87,8 @@ impl ConsumerClient {
         .await?;
 
         Ok(Self {
-            stream,
+            buf_reader: reader,
+            buf_writer: writer,
             session_key,
             mem_pool,
         })
@@ -84,7 +96,8 @@ impl ConsumerClient {
 
     pub async fn recv(&mut self) -> Result<Vec<u8>> {
         let decrypted =
-            read_encrypted_frame(&mut self.stream, &self.session_key, &mut self.mem_pool).await?;
+            read_encrypted_frame(&mut self.buf_reader, &self.session_key, &mut self.mem_pool)
+                .await?;
         Ok(decrypted.to_vec())
     }
 }

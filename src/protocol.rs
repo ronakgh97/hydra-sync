@@ -2,7 +2,6 @@ use crate::crypto::{NONCE_LEN, TAG_LEN, decrypt_into, encrypt_into, generate_x25
 use anyhow::{Result, bail};
 use sha2::{Digest, Sha256, Sha512};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
 use x25519_dalek::PublicKey;
 
 #[repr(u8)]
@@ -13,6 +12,7 @@ pub enum Role {
 }
 
 impl Role {
+    /// Converts a u8 to a Role, returning an error if the value is invalid
     pub fn from_u8(val: u8) -> Result<Self> {
         match val {
             0x01 => Ok(Self::Producer),
@@ -22,31 +22,40 @@ impl Role {
     }
 }
 
-pub async fn perform_client_handshake(stream: &mut TcpStream) -> Result<[u8; 32]> {
+/// Perform X25519 key exchange handshake on client side and return the derived shared secret
+pub async fn perform_client_handshake<R: AsyncReadExt + Unpin, W: AsyncWriteExt + Unpin>(
+    reader: &mut R,
+    writer: &mut W,
+) -> Result<[u8; 32]> {
     let (secret, public) = generate_x25519_keypair()?;
-    stream.write_all(public.as_bytes()).await?;
+    writer.write_all(public.as_bytes()).await?;
 
+    // TODO: use nonce
     let mut server_pub_bytes = [0u8; 32];
-    stream.read_exact(&mut server_pub_bytes).await?;
+    reader.read_exact(&mut server_pub_bytes).await?;
     let server_pub = PublicKey::from(server_pub_bytes);
 
     let shared_secret = secret.diffie_hellman(&server_pub);
     Ok(Sha256::digest(shared_secret.as_bytes()).into())
 }
 
-pub async fn perform_server_handshake(stream: &mut TcpStream) -> Result<[u8; 32]> {
+// Perform X25519 key exchange handshake on server side and return the derived shared secret
+pub async fn perform_server_handshake<R: AsyncReadExt + Unpin, W: AsyncWriteExt + Unpin>(
+    reader: &mut R,
+    writer: &mut W,
+) -> Result<[u8; 32]> {
     let (secret, public) = generate_x25519_keypair()?;
-
     let mut client_pub_bytes = [0u8; 32];
-    stream.read_exact(&mut client_pub_bytes).await?;
+    reader.read_exact(&mut client_pub_bytes).await?;
     let client_pub = PublicKey::from(client_pub_bytes);
 
-    stream.write_all(public.as_bytes()).await?;
+    writer.write_all(public.as_bytes()).await?;
 
     let shared_secret = secret.diffie_hellman(&client_pub);
     Ok(Sha256::digest(shared_secret.as_bytes()).into())
 }
 
+// Send role and session_id as join request
 pub async fn write_join_frame<W: AsyncWriteExt + Unpin>(
     writer: &mut W,
     role: Role,
@@ -60,6 +69,7 @@ pub async fn write_join_frame<W: AsyncWriteExt + Unpin>(
     write_encrypted_frame(writer, &payload, transport_key, mem_pool).await
 }
 
+// Reads the join frame from client
 pub async fn read_join_frame<R: AsyncReadExt + Unpin>(
     reader: &mut R,
     transport_key: &[u8; 32],
@@ -75,6 +85,8 @@ pub async fn read_join_frame<R: AsyncReadExt + Unpin>(
     Ok((role, session_id))
 }
 
+// Writes an encrypted frame with 4-byte big-endian length prefix, nonce, ciphertext, and tag,
+// using `mem_pool`
 pub async fn write_encrypted_frame<W: AsyncWriteExt + Unpin>(
     writer: &mut W,
     data: &[u8],
@@ -88,13 +100,15 @@ pub async fn write_encrypted_frame<W: AsyncWriteExt + Unpin>(
         mem_pool.resize(total, 0);
     }
 
-    mem_pool[..4].copy_from_slice(&(ciphertext_len as u32).to_be_bytes());
+    mem_pool[..4].copy_from_slice(&(ciphertext_len as u32).to_be_bytes()); // 4-byte prefix
     encrypt_into(data, &mut mem_pool[4..total], key)?;
     writer.write_all(&mem_pool[..total]).await?;
     writer.flush().await?;
     Ok(())
 }
 
+// Reads an encrypted frame with 4-byte big-endian length prefix, nonce, ciphertext, and tag,
+// decrypts it in-place, and returns the plaintext slice
 pub async fn read_encrypted_frame<'a, R: AsyncReadExt + Unpin>(
     reader: &mut R,
     key: &[u8; 32],
@@ -117,23 +131,27 @@ pub async fn read_encrypted_frame<'a, R: AsyncReadExt + Unpin>(
     Ok(&pt[..plaintext_len])
 }
 
+/// Reads a raw frame with 4-byte big-endian length prefix and payload,
+/// stores it in `mem_pool`, and returns the total frame size
 pub async fn read_raw_frame_into<R: AsyncReadExt + Unpin>(
     reader: &mut R,
-    buf: &mut Vec<u8>,
+    mem_pool: &mut Vec<u8>,
     max_payload_length: usize,
 ) -> Result<usize> {
     let len = read_payload_length(reader, max_payload_length).await? as usize;
     let total = 4 + len;
 
-    if buf.len() < total {
-        buf.resize(total, 0);
+    if mem_pool.len() < total {
+        mem_pool.resize(total, 0);
     }
 
-    buf[..4].copy_from_slice(&(len as u32).to_be_bytes());
-    reader.read_exact(&mut buf[4..total]).await?;
+    mem_pool[..4].copy_from_slice(&(len as u32).to_be_bytes()); // 4-bytes prefix
+    reader.read_exact(&mut mem_pool[4..total]).await?;
     Ok(total)
 }
 
+/// Reads a 4-byte big-endian length prefix and validates it against `max_payload_length`
+#[inline(always)]
 async fn read_payload_length<R: AsyncReadExt + Unpin>(
     reader: &mut R,
     max_payload_length: usize,

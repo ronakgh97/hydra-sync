@@ -1,11 +1,11 @@
-use crate::protocol::{self, Role, read_join_frame, perform_server_handshake};
+use crate::protocol::{Role, perform_server_handshake, read_join_frame, read_raw_frame_into};
 use crate::session::Sessions;
 use anyhow::Result;
 use bytes::Bytes;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::broadcast::error::RecvError;
 
@@ -74,9 +74,11 @@ impl RelayServer {
         broadcast_capacity: usize,
     ) -> Result<()> {
         stream.set_nodelay(true)?;
-
+        let (read_h, write_h) = stream.split();
+        let mut writer = BufWriter::new(write_h);
+        let mut reader = BufReader::new(read_h);
         let mut mem_pool = Vec::with_capacity(max_payload_length + 4);
-        let transport_key = perform_server_handshake(&mut stream).await?;
+        let transport_key = perform_server_handshake(&mut reader, &mut writer).await?;
         let (role, session_id) =
             read_join_frame(&mut stream, &transport_key, &mut mem_pool).await?;
 
@@ -107,9 +109,7 @@ impl RelayServer {
         let tx = sessions.get_or_create(session_id, capacity);
 
         loop {
-            let n = match protocol::read_raw_frame_into(&mut producer, &mut buf, max_payload_length)
-                .await
-            {
+            let n = match read_raw_frame_into(&mut producer, &mut buf, max_payload_length).await {
                 Ok(n) => n,
                 Err(e) => {
                     eprintln!("Producer read: {e}");
