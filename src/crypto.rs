@@ -11,6 +11,7 @@ pub const TAG_LEN: usize = 16;
 /// Encrypt `data` with a 32-byte `key` using AES-256-GCM,
 /// returns a byte vector containing the nonce, ciphertext, and tag or an error if encryption fails.
 #[inline]
+#[allow(unused)]
 pub fn encrypt_data(data: &[u8], key: &[u8; 32]) -> Result<Vec<u8>> {
     // generate random 12-byte nonce
     let mut nonce = [0u8; NONCE_LEN];
@@ -32,6 +33,7 @@ pub fn encrypt_data(data: &[u8], key: &[u8; 32]) -> Result<Vec<u8>> {
 /// Decrypt `data` that was encrypted with [`encrypt_data`],
 /// returns the original plaintext or an error if decryption fails.
 #[inline]
+#[allow(unused)]
 pub fn decrypt_data(data: &[u8], key: &[u8; 32]) -> Result<Vec<u8>> {
     if data.len() < NONCE_LEN + TAG_LEN {
         anyhow::bail!("Ciphertext too short");

@@ -1,7 +1,7 @@
 use crate::protocol::{Role, perform_server_handshake, read_join_frame, read_raw_frame_into};
 use crate::session::Sessions;
 use anyhow::Result;
-use bytes::Bytes;
+use bytes::BytesMut;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -31,11 +31,7 @@ impl RelayServer {
         })
     }
 
-    pub fn local_addr(&self) -> Result<SocketAddr> {
-        Ok(self.listener.local_addr()?)
-    }
-
-    pub async fn run(&self) {
+    pub async fn run(self) {
         loop {
             if self.connections.fetch_add(1, Ordering::Acquire) >= self.max_connections {
                 self.connections.fetch_sub(1, Ordering::Release);
@@ -77,10 +73,12 @@ impl RelayServer {
         let (read_h, write_h) = stream.split();
         let mut writer = BufWriter::new(write_h);
         let mut reader = BufReader::new(read_h);
-        let mut mem_pool = Vec::with_capacity(max_payload_length + 4);
+        let mut mem_pool = BytesMut::with_capacity(max_payload_length + 4); // considering max_payload_length is data.len() + 96 + (4-byte prefix)
         let transport_key = perform_server_handshake(&mut reader, &mut writer).await?;
         let (role, session_id) =
-            read_join_frame(&mut stream, &transport_key, &mut mem_pool).await?;
+            read_join_frame(&mut reader, &transport_key, &mut mem_pool).await?;
+        drop(reader);
+        drop(writer);
 
         match role {
             Role::Producer => {
@@ -90,7 +88,6 @@ impl RelayServer {
                     session_id,
                     max_payload_length,
                     broadcast_capacity,
-                    mem_pool,
                 )
                 .await
             }
@@ -104,9 +101,9 @@ impl RelayServer {
         session_id: [u8; 64],
         max_payload_length: usize,
         capacity: usize,
-        mut buf: Vec<u8>,
     ) -> Result<()> {
-        let tx = sessions.get_or_create(session_id, capacity);
+        let tx = sessions.try_register_producer(session_id, capacity)?;
+        let mut buf = BytesMut::with_capacity(max_payload_length + 4);
 
         loop {
             let n = match read_raw_frame_into(&mut producer, &mut buf, max_payload_length).await {
@@ -117,13 +114,13 @@ impl RelayServer {
                 }
             };
 
-            if let Err(e) = tx.send(Bytes::copy_from_slice(&buf[..n])) {
-                eprintln!("Broadcast: {e}");
+            if let Err(e) = tx.send(buf.split_to(n).freeze()) {
+                eprintln!("Producer broadcast: {e}");
                 break;
             }
         }
 
-        sessions.remove(session_id);
+        sessions.unregister_producer(session_id);
         Ok(())
     }
 
@@ -133,7 +130,7 @@ impl RelayServer {
         session_id: [u8; 64],
     ) -> Result<()> {
         let tx = sessions
-            .get(session_id)
+            .get_for_consumer(session_id)
             .ok_or_else(|| anyhow::anyhow!("Session not found"))?;
 
         let mut rx = tx.subscribe();
@@ -145,7 +142,8 @@ impl RelayServer {
                 result = rx.recv() => {
                     match result {
                         Ok(data) => {
-                            if writer.write_all(&data).await.is_err() {
+                            if let Err(e) = writer.write_all(&data).await {
+                                eprintln!("Consumer write: {e}");
                                 break;
                             }
                         }
@@ -158,7 +156,7 @@ impl RelayServer {
                 }
                 result = reader.read(&mut peek) => {
                     match result {
-                        Ok(0) => break,
+                        Ok(0) => break, // eof check
                         Err(e) => {
                             eprintln!("Consumer read: {e}");
                             break;

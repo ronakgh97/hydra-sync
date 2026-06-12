@@ -2,20 +2,22 @@ use crate::protocol::{
     Role, perform_client_handshake, read_encrypted_frame, write_encrypted_frame, write_join_frame,
 };
 use anyhow::Result;
+use bytes::BytesMut;
 use std::net::SocketAddr;
 use tokio::io::{BufReader, BufWriter};
 use tokio::net::TcpStream;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 
 pub struct ProducerClient {
+    #[allow(unused)]
     buf_reader: BufReader<OwnedReadHalf>,
     buf_writer: BufWriter<OwnedWriteHalf>,
     session_key: [u8; 32],
-    mem_pool: Vec<u8>,
+    mem_pool: BytesMut,
 }
 
 impl ProducerClient {
-    pub async fn connect_producer(
+    pub async fn connect(
         addr: SocketAddr,
         session_id: &[u8; 64],
         session_key: [u8; 32],
@@ -27,7 +29,7 @@ impl ProducerClient {
         let mut writer = BufWriter::new(writer);
         let mut reader = BufReader::new(reader);
         let transport_key = perform_client_handshake(&mut reader, &mut writer).await?;
-        let mut mem_pool = Vec::with_capacity(1024 * 1024 * 18);
+        let mut mem_pool = BytesMut::with_capacity(1024 * 1024 * 18);
         write_join_frame(
             &mut writer,
             Role::Producer,
@@ -58,13 +60,14 @@ impl ProducerClient {
 
 pub struct ConsumerClient {
     buf_reader: BufReader<OwnedReadHalf>,
+    #[allow(unused)]
     buf_writer: BufWriter<OwnedWriteHalf>,
     session_key: [u8; 32],
-    mem_pool: Vec<u8>,
+    mem_pool: BytesMut,
 }
 
 impl ConsumerClient {
-    pub async fn connect_consumer(
+    pub async fn connect(
         addr: SocketAddr,
         session_id: &[u8; 64],
         session_key: [u8; 32],
@@ -76,7 +79,7 @@ impl ConsumerClient {
         let mut reader = BufReader::new(reader);
 
         let transport_key = perform_client_handshake(&mut reader, &mut writer).await?;
-        let mut mem_pool = Vec::with_capacity(1024 * 1024 * 18);
+        let mut mem_pool = BytesMut::with_capacity(1024 * 1024 * 18);
         write_join_frame(
             &mut writer,
             Role::Consumer,
