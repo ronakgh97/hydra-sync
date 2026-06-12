@@ -1,4 +1,4 @@
-use crate::protocol::{self, Role};
+use crate::protocol::{self, Role, read_join_frame, perform_server_handshake};
 use crate::session::Sessions;
 use anyhow::Result;
 use bytes::Bytes;
@@ -31,16 +31,21 @@ impl RelayServer {
         })
     }
 
+    pub fn local_addr(&self) -> Result<SocketAddr> {
+        Ok(self.listener.local_addr()?)
+    }
+
     pub async fn run(&self) {
         loop {
             if self.connections.fetch_add(1, Ordering::Acquire) >= self.max_connections {
                 self.connections.fetch_sub(1, Ordering::Release);
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                 continue;
             }
 
             match self.listener.accept().await {
-                Ok((stream, addr)) => {
+                Ok((stream, peer_addr)) => {
+                    stream.set_nodelay(true).ok();
                     let sessions = self.sessions.clone();
                     let connections = self.connections.clone();
                     let max_payload = self.max_payload_length;
@@ -49,14 +54,14 @@ impl RelayServer {
                         if let Err(e) =
                             Self::handle_connection(stream, sessions, max_payload, capacity).await
                         {
-                            eprintln!("Error from {}: {}", addr, e);
+                            eprintln!("Connection handling error: {} from: {}", e, peer_addr);
                         }
                         connections.fetch_sub(1, Ordering::Release);
                     });
                 }
                 Err(e) => {
                     self.connections.fetch_sub(1, Ordering::Release);
-                    eprintln!("Accept failed: {}", e);
+                    eprintln!("Connection accepting error: {}", e);
                 }
             }
         }
@@ -71,9 +76,9 @@ impl RelayServer {
         stream.set_nodelay(true)?;
 
         let mut mem_pool = Vec::with_capacity(max_payload_length + 4);
-        let transport_key = protocol::perform_server_handshake(&mut stream).await?;
+        let transport_key = perform_server_handshake(&mut stream).await?;
         let (role, session_id) =
-            protocol::read_join_frame(&mut stream, &transport_key, &mut mem_pool).await?;
+            read_join_frame(&mut stream, &transport_key, &mut mem_pool).await?;
 
         match role {
             Role::Producer => {
@@ -106,10 +111,14 @@ impl RelayServer {
                 .await
             {
                 Ok(n) => n,
-                Err(_) => break,
+                Err(e) => {
+                    eprintln!("Producer read: {e}");
+                    break;
+                }
             };
 
-            if tx.send(Bytes::copy_from_slice(&buf[..n])).is_err() {
+            if let Err(e) = tx.send(Bytes::copy_from_slice(&buf[..n])) {
+                eprintln!("Broadcast: {e}");
                 break;
             }
         }
@@ -140,13 +149,20 @@ impl RelayServer {
                                 break;
                             }
                         }
-                        Err(RecvError::Lagged(_)) => break,
+                        Err(RecvError::Lagged(n)) => {
+                            eprintln!("Consumer lagged: {n}");
+                            break;
+                        }
                         Err(RecvError::Closed) => break,
                     }
                 }
                 result = reader.read(&mut peek) => {
                     match result {
-                        Ok(0) | Err(_) => break,
+                        Ok(0) => break,
+                        Err(e) => {
+                            eprintln!("Consumer read: {e}");
+                            break;
+                        }
                         _ => {}
                     }
                 }

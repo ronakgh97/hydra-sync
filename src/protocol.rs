@@ -1,6 +1,6 @@
 use crate::crypto::{NONCE_LEN, TAG_LEN, decrypt_into, encrypt_into, generate_x25519_keypair};
 use anyhow::{Result, bail};
-use sha2::{Digest, Sha256};
+use sha2::{Digest, Sha256, Sha512};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use x25519_dalek::PublicKey;
@@ -56,7 +56,7 @@ pub async fn write_join_frame<W: AsyncWriteExt + Unpin>(
 ) -> Result<()> {
     let mut payload = Vec::with_capacity(1 + session_id.len());
     payload.push(role as u8);
-    payload.extend_from_slice(session_id);
+    payload.extend_from_slice(&Sha512::digest(session_id));
     write_encrypted_frame(writer, &payload, transport_key, mem_pool).await
 }
 
@@ -71,6 +71,7 @@ pub async fn read_join_frame<R: AsyncReadExt + Unpin>(
     }
     let role = Role::from_u8(plaintext[0])?;
     let session_id = plaintext[1..].try_into()?;
+    Sha512::digest(session_id);
     Ok((role, session_id))
 }
 
@@ -142,7 +143,11 @@ async fn read_payload_length<R: AsyncReadExt + Unpin>(
     let len = u32::from_be_bytes(len_buf);
 
     if len == 0 || len as usize > max_payload_length {
-        bail!("Invalid payload length: {}", len);
+        bail!(
+            "Invalid payload length: {}, must be between 1 and {}",
+            len,
+            max_payload_length
+        );
     }
 
     Ok(len)
