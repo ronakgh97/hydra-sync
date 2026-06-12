@@ -8,15 +8,18 @@ use tokio::io::{BufReader, BufWriter};
 use tokio::net::TcpStream;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 
+/// ProducerClient connects to the relay server as a producer, performs handshake,
+/// and can broadcast encrypted frames to all connected consumers in the same session.
 pub struct ProducerClient {
+    session_key: [u8; 32],
     #[allow(unused)]
     buf_reader: BufReader<OwnedReadHalf>,
     buf_writer: BufWriter<OwnedWriteHalf>,
-    session_key: [u8; 32],
     mem_pool: BytesMut,
 }
 
 impl ProducerClient {
+    /// Connects to the relay server, performs handshake, and sends a join frame with the producer role and session_id.
     pub async fn connect(
         addr: SocketAddr,
         session_id: &[u8; 64],
@@ -47,6 +50,7 @@ impl ProducerClient {
         })
     }
 
+    /// Broadcasts the given data as an encrypted frame to all connected consumers (zero-copy) in the same session.
     pub async fn broadcast(&mut self, data: &[u8]) -> Result<()> {
         write_encrypted_frame(
             &mut self.buf_writer,
@@ -58,15 +62,18 @@ impl ProducerClient {
     }
 }
 
+/// ConsumerClient connects to the relay server as a consumer, performs handshake,
+/// and can receive encrypted frames broadcast by the producer in the same session.
 pub struct ConsumerClient {
+    session_key: [u8; 32],
     buf_reader: BufReader<OwnedReadHalf>,
     #[allow(unused)]
     buf_writer: BufWriter<OwnedWriteHalf>,
-    session_key: [u8; 32],
     mem_pool: BytesMut,
 }
 
 impl ConsumerClient {
+    /// Connects to the relay server, performs handshake, and sends a join frame with the consumer role and session_id.
     pub async fn connect(
         addr: SocketAddr,
         session_id: &[u8; 64],
@@ -97,10 +104,11 @@ impl ConsumerClient {
         })
     }
 
-    pub async fn recv(&mut self) -> Result<Vec<u8>> {
+    /// Receives the next encrypted frame from the producer, decrypts it, and returns the plaintext data as a Vec<u8>.
+    pub async fn recv(&mut self) -> Result<&[u8]> {
         let decrypted =
             read_encrypted_frame(&mut self.buf_reader, &self.session_key, &mut self.mem_pool)
                 .await?;
-        Ok(decrypted.to_vec())
+        Ok(decrypted)
     }
 }

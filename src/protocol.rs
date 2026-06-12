@@ -109,6 +109,8 @@ pub async fn write_encrypted_frame<W: AsyncWriteExt + Unpin>(
     Ok(())
 }
 
+/// Reads an encrypted frame with 4-byte big-endian length prefix, nonce, ciphertext, and tag,
+/// decrypts it into `mem_pool`, and returns a slice to the plaintext
 pub async fn read_encrypted_frame<'a, R: AsyncReadExt + Unpin>(
     reader: &mut R,
     key: &[u8; 32],

@@ -1,0 +1,9 @@
+[alias]
+cp = "clippy --release --all-targets"
+ch = "check --release --all-targets"
+tp = "nextest run --all-targets --no-fail-fast --release --test-threads 18"
+tc = "nextest run --all-targets --no-capture --no-fail-fast --release"
+
+[build]
+jobs = 24
+rustflags = ["-C", "target-cpu=native", "-C", "opt-level=2", "-C", "codegen-units=8"]

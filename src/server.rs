@@ -9,16 +9,44 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::broadcast::error::RecvError;
 
+/// A light-weight multi-threaded SPMC (Single Producer Multiple Consumer) E2E relay server.
+///
+/// `RelayServer` implements a zero-copy broadcast relay that:
+/// - Accepts one producer and multiple consumers per session
+/// - Routes data from producer → all connected consumers using Arc-backed `Bytes`
+/// - Handles backpressure and slow consumers with broadcast channel lagging
+/// - Enforces connection limits and per-payload size constraints
+///
+/// Internals
+/// - Producer: Sends encrypted frames → broadcast channel
+/// - Consumers: Subscribe to broadcast, receive clones of Arc<Bytes> (zero-copy)
+/// - Sessions: Keyed by 64-byte session_id, one producer per session allowed
+///
+/// ```rust
+/// let server = RelayServer::bind(&"127.0.0.1:9000".parse()?).await?;
+/// server.run().await;
+/// ```
 pub struct RelayServer {
+    /// internal tcp listener for accepting incoming connections
     listener: TcpListener,
+    /// session management for producers and consumers
     sessions: Arc<Sessions>,
+    /// atomic counter to track active connections for enforcing limits
     connections: Arc<AtomicUsize>,
-    max_payload_length: usize,
+    /// maximum concurrent connections allowed to prevent resource exhaustion
     max_connections: usize,
+    /// maximum allowed payload size for incoming frames to prevent abuse
+    max_payload_length: usize,
+    /// capacity of the broadcast channel for each session to handle backpressure
     broadcast_capacity: usize,
 }
 
 impl RelayServer {
+    /// Binds the relay server to the specified socket address and initializes internal state
+    /// Defaults:
+    /// - max_connections: 24
+    /// - max_payload_length: 64 MiB
+    /// - broadcast_capacity: 256 messages
     pub async fn bind(addr: &SocketAddr) -> Result<Self> {
         let listener = TcpListener::bind(addr).await?;
         Ok(Self {
@@ -31,24 +59,31 @@ impl RelayServer {
         })
     }
 
-    pub async fn run(self) {
+    /// Main server loop to accept incoming connections, spawn thread handlers, perform handshakes & session creation
+    /// `connections_timeout_ms` is the delay before client retries to accept new connections
+    /// on server when the limit is reached
+    pub async fn run(self, connections_timeout_ms: u64) -> Result<()> {
         loop {
             if self.connections.fetch_add(1, Ordering::Acquire) >= self.max_connections {
                 self.connections.fetch_sub(1, Ordering::Release);
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                tokio::time::sleep(std::time::Duration::from_millis(connections_timeout_ms)).await;
                 continue;
             }
 
             match self.listener.accept().await {
                 Ok((stream, peer_addr)) => {
                     stream.set_nodelay(true).ok();
-                    let sessions = self.sessions.clone();
-                    let connections = self.connections.clone();
-                    let max_payload = self.max_payload_length;
-                    let capacity = self.broadcast_capacity;
+                    let sessions = Arc::clone(&self.sessions);
+                    let connections = Arc::clone(&self.connections);
+                    // spawn handler thread
                     tokio::spawn(async move {
-                        if let Err(e) =
-                            Self::handle_connection(stream, sessions, max_payload, capacity).await
+                        if let Err(e) = Self::handle_connection(
+                            stream,
+                            sessions,
+                            self.max_payload_length,
+                            self.broadcast_capacity,
+                        )
+                        .await
                         {
                             eprintln!("Connection handling error: {} from: {}", e, peer_addr);
                         }
@@ -63,6 +98,7 @@ impl RelayServer {
         }
     }
 
+    /// Handles an individual client connection, performing handshake, role determination, and routing to producer/consumer handlers
     async fn handle_connection(
         mut stream: TcpStream,
         sessions: Arc<Sessions>,
@@ -77,55 +113,63 @@ impl RelayServer {
         let transport_key = perform_server_handshake(&mut reader, &mut writer).await?;
         let (role, session_id) =
             read_join_frame(&mut reader, &transport_key, &mut mem_pool).await?;
-        drop(reader);
-        drop(writer);
 
         match role {
             Role::Producer => {
                 Self::run_producer(
-                    stream,
+                    &mut reader,
                     sessions,
                     session_id,
+                    mem_pool,
                     max_payload_length,
                     broadcast_capacity,
                 )
                 .await
             }
-            Role::Consumer => Self::run_consumer(stream, sessions, session_id).await,
+            Role::Consumer => {
+                Self::run_consumer(&mut reader, &mut writer, sessions, session_id).await
+            }
         }
     }
 
-    async fn run_producer(
-        mut producer: TcpStream,
+    /// Handles producer clients: reads encrypted frames, decrypts, and broadcasts to consumers via the session's broadcast channel
+    async fn run_producer<R: AsyncReadExt + Unpin>(
+        reader: &mut R,
         sessions: Arc<Sessions>,
         session_id: [u8; 64],
+        mut mem_pool: BytesMut,
         max_payload_length: usize,
-        capacity: usize,
+        broadcast_capacity: usize,
     ) -> Result<()> {
-        let tx = sessions.try_register_producer(session_id, capacity)?;
-        let mut buf = BytesMut::with_capacity(max_payload_length + 4);
+        let tx = sessions.try_register_producer(session_id, broadcast_capacity)?;
 
         loop {
-            let n = match read_raw_frame_into(&mut producer, &mut buf, max_payload_length).await {
+            // read from client read stream
+            let n = match read_raw_frame_into(reader, &mut mem_pool, max_payload_length).await {
                 Ok(n) => n,
                 Err(e) => {
+                    tx.closed().await;
                     eprintln!("Producer read: {e}");
                     break;
                 }
             };
 
-            if let Err(e) = tx.send(buf.split_to(n).freeze()) {
+            // write to broadcast channel
+            if let Err(e) = tx.send(mem_pool.split_to(n).freeze()) {
+                tx.closed().await; // close channel to signal consumers
                 eprintln!("Producer broadcast: {e}");
                 break;
             }
         }
 
+        // clean up
         sessions.unregister_producer(session_id);
         Ok(())
     }
 
-    async fn run_consumer(
-        stream: TcpStream,
+    async fn run_consumer<R: AsyncReadExt + Unpin, W: AsyncWriteExt + Unpin>(
+        reader: &mut R,
+        writer: &mut W,
         sessions: Arc<Sessions>,
         session_id: [u8; 64],
     ) -> Result<()> {
@@ -134,24 +178,34 @@ impl RelayServer {
             .ok_or_else(|| anyhow::anyhow!("Session not found"))?;
 
         let mut rx = tx.subscribe();
-        let (mut reader, mut writer) = stream.into_split();
 
         let mut peek = [0u8; 1];
         loop {
             tokio::select! {
+                // poll from channel
                 result = rx.recv() => {
                     match result {
                         Ok(data) => {
+                            // try writing to client read stream first or fail
                             if let Err(e) = writer.write_all(&data).await {
+                            let _ = writer.flush().await;
+                            let _ = writer.shutdown().await;
                                 eprintln!("Consumer write: {e}");
                                 break;
                             }
                         }
                         Err(RecvError::Lagged(n)) => {
+                            let _ = writer.flush().await;
+                            let _ = writer.shutdown().await;
                             eprintln!("Consumer lagged: {n}");
                             break;
                         }
-                        Err(RecvError::Closed) => break,
+                        Err(RecvError::Closed) => {
+                            let _ = writer.flush().await;
+                            let _ = writer.shutdown().await;
+                            eprintln!("Producer closed");
+                            break;
+                        },
                     }
                 }
                 result = reader.read(&mut peek) => {
