@@ -21,11 +21,6 @@ use tokio::sync::broadcast::error::RecvError;
 /// - Producer: Sends encrypted frames → broadcast channel
 /// - Consumers: Subscribe to broadcast, receive clones of Arc<Bytes> (zero-copy)
 /// - Sessions: Keyed by 64-byte session_id, one producer per session allowed
-///
-/// ```rust
-/// let server = RelayServer::bind(&"127.0.0.1:9000".parse()?).await?;
-/// server.run().await;
-/// ```
 pub struct RelayServer {
     /// internal tcp listener for accepting incoming connections
     listener: TcpListener,
@@ -60,8 +55,10 @@ impl RelayServer {
     }
 
     /// Main server loop to accept incoming connections, spawn thread handlers, perform handshakes & session creation
-    /// `connections_timeout_ms` is the delay before client retries to accept new connections
-    /// on server when the limit is reached
+    /// - `connections_timeout_ms` is the delay before client retries to accept new connections on server when the limit is reached
+    /// - Producer errors; If read fails from client or broadcast send fails, the connection is closed and the error is logged.
+    /// - Producer errors; If writing to client fails or broadcast lags or closed, the connection is closed and the error is logged.
+    /// - EOF check are gracefully handled by closing the connection without logging an error.
     pub async fn run(self, connections_timeout_ms: u64) -> Result<()> {
         loop {
             if self.connections.fetch_add(1, Ordering::Acquire) >= self.max_connections {
@@ -109,7 +106,7 @@ impl RelayServer {
         let (read_h, write_h) = stream.split();
         let mut writer = BufWriter::new(write_h);
         let mut reader = BufReader::new(read_h);
-        let mut mem_pool = BytesMut::with_capacity(max_payload_length + 4); // considering max_payload_length is data.len() + 96 + (4-byte prefix)
+        let mut mem_pool = BytesMut::with_capacity(max_payload_length + 4);
         let transport_key = perform_server_handshake(&mut reader, &mut writer).await?;
         let (role, session_id) =
             read_join_frame(&mut reader, &transport_key, &mut mem_pool).await?;
@@ -188,11 +185,11 @@ impl RelayServer {
                         Ok(data) => {
                             // try writing to client read stream first or fail
                             if let Err(e) = writer.write_all(&data).await {
-                            let _ = writer.flush().await;
-                            let _ = writer.shutdown().await;
+                                let _ = writer.shutdown().await;
                                 eprintln!("Consumer write: {e}");
                                 break;
                             }
+                            let _ = writer.flush().await;
                         }
                         Err(RecvError::Lagged(n)) => {
                             let _ = writer.flush().await;

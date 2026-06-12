@@ -1,7 +1,7 @@
 use crate::crypto::{NONCE_LEN, TAG_LEN, decrypt_into, encrypt_into, generate_x25519_keypair};
 use anyhow::{Result, bail};
 use bytes::BytesMut;
-use sha2::{Digest, Sha256};
+use sha3::{Digest, Sha3_256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use x25519_dalek::PublicKey;
 
@@ -38,7 +38,7 @@ pub async fn perform_client_handshake<R: AsyncReadExt + Unpin, W: AsyncWriteExt 
     let server_pub = PublicKey::from(server_pub_bytes);
 
     let shared_secret = secret.diffie_hellman(&server_pub);
-    Ok(Sha256::digest(shared_secret.as_bytes()).into())
+    Ok(Sha3_256::digest(shared_secret.as_bytes()).into())
 }
 
 // Perform X25519 key exchange handshake on server side and return the derived shared secret
@@ -55,7 +55,7 @@ pub async fn perform_server_handshake<R: AsyncReadExt + Unpin, W: AsyncWriteExt 
     writer.flush().await?;
 
     let shared_secret = secret.diffie_hellman(&client_pub);
-    Ok(Sha256::digest(shared_secret.as_bytes()).into())
+    Ok(Sha3_256::digest(shared_secret.as_bytes()).into())
 }
 
 // Send role and session_id as join request

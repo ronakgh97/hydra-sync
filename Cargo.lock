@@ -200,7 +200,6 @@ version = "0.11.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f1dd6dbb5841937940781866fa1281a1ff7bd3bf827091440879f9994983d5c2"
 dependencies = [
- "block-buffer",
  "const-oid",
  "crypto-common",
 ]
@@ -295,7 +294,7 @@ dependencies = [
  "bytes",
  "dashmap",
  "rand",
- "sha2",
+ "sha3",
  "tokio",
  "x25519-dalek",
 ]
@@ -332,6 +331,16 @@ name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
+
+[[package]]
+name = "keccak"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9e24a010dd405bd7ed803e5253182815b41bf2e6a80cc3bfc066658e03a198aa"
+dependencies = [
+ "cfg-if",
+ "cpufeatures",
+]
 
 [[package]]
 name = "leb128fmt"
@@ -541,14 +550,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "sha2"
-version = "0.11.0"
+name = "sha3"
+version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "446ba717509524cb3f22f17ecc096f10f4822d76ab5c0b9822c5f9c284e825f4"
+checksum = "bc9bad02c26382724b2d2692c6f179285e4b54eeecd7968f52a50059c3c11759"
 dependencies = [
- "cfg-if",
- "cpufeatures",
  "digest",
+ "keccak",
+ "sponge-cursor",
 ]
 
 [[package]]
@@ -576,6 +585,12 @@ dependencies = [
  "libc",
  "windows-sys",
 ]
+
+[[package]]
+name = "sponge-cursor"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3a0219bd7d979d58245a4f41f695e1ac9f8befdffadd7f61f1bae9e39abc6620"
 
 [[package]]
 name = "subtle"

@@ -4,7 +4,7 @@ use crate::protocol::{
 use anyhow::Result;
 use bytes::BytesMut;
 use std::net::SocketAddr;
-use tokio::io::{BufReader, BufWriter};
+use tokio::io::{AsyncWriteExt, BufReader, BufWriter};
 use tokio::net::TcpStream;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 
@@ -60,6 +60,12 @@ impl ProducerClient {
         )
         .await
     }
+
+    pub async fn close(&mut self) -> Result<()> {
+        self.buf_writer.flush().await?;
+        self.buf_writer.shutdown().await?;
+        Ok(())
+    }
 }
 
 /// ConsumerClient connects to the relay server as a consumer, performs handshake,
@@ -110,5 +116,11 @@ impl ConsumerClient {
             read_encrypted_frame(&mut self.buf_reader, &self.session_key, &mut self.mem_pool)
                 .await?;
         Ok(decrypted)
+    }
+
+    pub async fn close(&mut self) -> Result<()> {
+        self.buf_writer.flush().await?;
+        self.buf_writer.shutdown().await?;
+        Ok(())
     }
 }
