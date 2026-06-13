@@ -2,18 +2,21 @@
 
 ```rust
 use hydra_sync::client::HydraClient;
-use std::net::SocketAddr;
+use hydra_sync::server::HydraServer;
+use anyhow::Result;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let server_addr = "127.0.0.1:6969".parse::<SocketAddr>()?;
+    let (server, server_addr) = HydraServer::bind_default().await?; // bind to os-assigned port
     let session_id = [0xFFu8; 64];
     let session_key = [0xAAu8; 32];
+
+    tokio::spawn(async move { server.run(500).await }); // run in background
 
     // Producer; sends data to all consumers in the session
     let mut producer =
         HydraClient::connect_producer(server_addr, &session_id, session_key).await?;
-    producer.broadcast(b"hello relay").await?;
+    producer.broadcast(b"you are an idiot").await?;
 
     // Consumer; receives and decrypts frames from the producer
     let mut consumer =
@@ -26,8 +29,11 @@ async fn main() -> anyhow::Result<()> {
         // `data` borrows from `consumer`'s internal memory pool and is
         // only valid until the next `recv()` or `broadcast()` call.
         // Copy it out (e.g. `data.to_vec()`) if you need to keep it longer.
+        break;
     }
 
-    consumer.close().await?; // clear shutdown
+    producer.close().await?; // clean shutdown
+    
+    Ok(())
 }
 ```

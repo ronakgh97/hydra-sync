@@ -1,14 +1,10 @@
 use hydra_sync::client::HydraClient;
 use hydra_sync::server::HydraServer;
 use rand::random;
-use std::net::SocketAddr;
 
 #[tokio::test]
 async fn basic_relay() {
-    let server_addr = "127.0.0.1:6969".parse::<SocketAddr>().unwrap();
-    let server = HydraServer::bind(&server_addr, None, None, None)
-        .await
-        .unwrap();
+    let (server, server_addr) = HydraServer::bind_default().await.unwrap();
     tokio::spawn(async move { server.run(500).await });
 
     let session_id = random();
@@ -38,10 +34,7 @@ async fn basic_relay() {
 
 #[tokio::test]
 async fn concurrent_multi_consumer_relay() {
-    let server_addr = "127.0.0.1:6970".parse::<SocketAddr>().unwrap();
-    let server = HydraServer::bind(&server_addr, None, None, None)
-        .await
-        .unwrap();
+    let (server, server_addr) = HydraServer::bind_default().await.unwrap();
     tokio::spawn(async move { server.run(500).await });
 
     let session_id = random();
@@ -93,10 +86,7 @@ async fn concurrent_multi_consumer_relay() {
 
 #[tokio::test]
 async fn continuous_stream_relay() {
-    let server_addr = "127.0.0.1:6971".parse::<SocketAddr>().unwrap();
-    let server = HydraServer::bind(&server_addr, None, None, None)
-        .await
-        .unwrap();
+    let (server, server_addr) = HydraServer::bind_default().await.unwrap();
     tokio::spawn(async move { server.run(500).await });
 
     let session_id = random();

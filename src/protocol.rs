@@ -67,6 +67,7 @@ pub async fn perform_server_handshake<R: AsyncReadExt + Unpin, W: AsyncWriteExt 
 ) -> Result<[u8; 32]> {
     let (secret, server_pub) = generate_x25519_keypair()?;
 
+    // read client nonce + 32 bytes key
     let mut client_nonce = [0u8; TLS_NONCE_LEN];
     reader.read_exact(&mut client_nonce).await?;
     let mut client_pub_bytes = [0u8; 32];

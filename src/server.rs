@@ -21,7 +21,7 @@ use tokio::sync::broadcast::error::RecvError;
 ///
 /// Internals
 /// - Producer: Sends encrypted frames → broadcast channel
-/// - Consumers: Subscribe to broadcast, receive clones of Arc<Bytes> (zero-copy)
+/// - Consumers: Subscribe to broadcast, receive clones of `Arc<Bytes>` (zero-copy)
 /// - Sessions: Keyed by 64-byte session_id, one producer per session allowed
 /// - Errors & Logs: Error are predictable and handled gracefully by closing connections and logging without crashing the server
 pub struct HydraServer {
@@ -40,25 +40,33 @@ pub struct HydraServer {
 }
 
 impl HydraServer {
-    /// Binds the relay server to the specified socket address and initializes internal state
-    /// Defaults:
-    /// - max_connections: 24
+    /// Binds the relay server with defaults
+    /// - addr: OS-assigned port
+    /// - max_connections: 32
     /// - max_payload_length: 64 MiB
     /// - broadcast_capacity: 256 messages
+    pub async fn bind_default() -> Result<(Self, SocketAddr)> {
+        let addr = &"127.0.0.1:0".parse::<SocketAddr>()?;
+        let server = HydraServer::bind(addr, 64 * 1024 * 1024, 32, 256).await?;
+        let local_addr = server.listener.local_addr()?;
+        Ok((server, local_addr))
+    }
+
+    /// Binds the relay server to the specified socket address and initializes internal state
     pub async fn bind(
         addr: &SocketAddr,
-        max_payload_length: Option<usize>,
-        max_connections: Option<usize>,
-        broadcast_capacity: Option<usize>,
+        max_payload_length: usize,
+        max_connections: usize,
+        broadcast_capacity: usize,
     ) -> Result<Self> {
         let listener = TcpListener::bind(addr).await?;
         Ok(Self {
             listener,
             sessions: Arc::new(Sessions::init()),
             connections: Arc::new(AtomicUsize::new(0)),
-            max_payload_length: max_payload_length.unwrap_or(64 * 1024 * 1024),
-            max_connections: max_connections.unwrap_or(24),
-            broadcast_capacity: broadcast_capacity.unwrap_or(256),
+            max_payload_length,
+            max_connections,
+            broadcast_capacity,
         })
     }
 

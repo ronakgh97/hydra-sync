@@ -1,7 +1,15 @@
 [package]
 name = "hydra-sync"
-version = "1.0.0-beta.1"
+version = "1.0.0-beta.2"
 edition = "2024"
+authors = ["ronakgh {ronakgh97@gmail.com}"]
+description = "Light-weight zero-copy E2E Single Producer Multiple Consumer network cluster library."
+license = "MIT"
+repository = "https://github.com/ronakgh97/hydra-sync"
+readme = "README.md"
+categories = ["network-programming", "security", "asynchronous", "cryptography"]
+keywords = ["relay", "network", "cluster", "spmc", "zero-copy"]
+
 
 [lib]
 name = "hydra_sync"
