@@ -1,9 +1,14 @@
 use crate::crypto::{NONCE_LEN, TAG_LEN, decrypt_into, encrypt_into, generate_x25519_keypair};
 use anyhow::{Result, bail};
 use bytes::BytesMut;
+use rand::Rng;
 use sha3::{Digest, Sha3_256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use x25519_dalek::PublicKey;
+
+const TLS_NONCE_LEN: usize = 72;
+const HANDSHAKE_INFO: &[u8] =
+    concat!("hydra-sync transport key/v", env!("CARGO_PKG_VERSION")).as_bytes();
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -13,6 +18,7 @@ pub enum Role {
 }
 
 impl Role {
+    #[inline]
     /// Converts an u8 to a Role, returning an error if the value is invalid
     pub fn from_u8(val: u8) -> Result<Self> {
         match val {
@@ -28,17 +34,30 @@ pub async fn perform_client_handshake<R: AsyncReadExt + Unpin, W: AsyncWriteExt 
     reader: &mut R,
     writer: &mut W,
 ) -> Result<[u8; 32]> {
-    let (secret, public) = generate_x25519_keypair()?;
-    writer.write_all(public.as_bytes()).await?;
+    let (secret, client_pub) = generate_x25519_keypair()?;
+
+    let mut client_nonce = [0u8; TLS_NONCE_LEN];
+    rand::rng().fill_bytes(&mut client_nonce);
+
+    // write nonce + 32 bytes key
+    writer.write_all(&client_nonce).await?;
+    writer.write_all(client_pub.as_bytes()).await?;
     writer.flush().await?;
 
-    // TODO: use nonce
+    let mut server_nonce = [0u8; TLS_NONCE_LEN];
+    reader.read_exact(&mut server_nonce).await?;
     let mut server_pub_bytes = [0u8; 32];
     reader.read_exact(&mut server_pub_bytes).await?;
     let server_pub = PublicKey::from(server_pub_bytes);
 
     let shared_secret = secret.diffie_hellman(&server_pub);
-    Ok(Sha3_256::digest(shared_secret.as_bytes()).into())
+    derive_transport_key(
+        shared_secret.as_bytes(),
+        client_pub.as_bytes(),
+        &client_nonce,
+        server_pub.as_bytes(),
+        &server_nonce,
+    )
 }
 
 // Perform X25519 key exchange handshake on server side and return the derived shared secret
@@ -46,16 +65,49 @@ pub async fn perform_server_handshake<R: AsyncReadExt + Unpin, W: AsyncWriteExt 
     reader: &mut R,
     writer: &mut W,
 ) -> Result<[u8; 32]> {
-    let (secret, public) = generate_x25519_keypair()?;
+    let (secret, server_pub) = generate_x25519_keypair()?;
+
+    let mut client_nonce = [0u8; TLS_NONCE_LEN];
+    reader.read_exact(&mut client_nonce).await?;
     let mut client_pub_bytes = [0u8; 32];
     reader.read_exact(&mut client_pub_bytes).await?;
     let client_pub = PublicKey::from(client_pub_bytes);
 
-    writer.write_all(public.as_bytes()).await?;
+    let mut server_nonce = [0u8; TLS_NONCE_LEN];
+    rand::rng().fill_bytes(&mut server_nonce);
+
+    writer.write_all(&server_nonce).await?;
+    writer.write_all(server_pub.as_bytes()).await?;
     writer.flush().await?;
 
     let shared_secret = secret.diffie_hellman(&client_pub);
-    Ok(Sha3_256::digest(shared_secret.as_bytes()).into())
+    derive_transport_key(
+        shared_secret.as_bytes(),
+        client_pub.as_bytes(),
+        &client_nonce,
+        server_pub.as_bytes(),
+        &server_nonce,
+    )
+}
+
+#[inline(always)]
+// Derives a transport key by hashing the concatenation of client/server public keys, nonce, handshake info, and shared secret using SHA3-256
+fn derive_transport_key(
+    shared_secret: &[u8],
+    client_pub: &[u8; 32],
+    client_nonce: &[u8; TLS_NONCE_LEN],
+    server_pub: &[u8; 32],
+    server_nonce: &[u8; TLS_NONCE_LEN],
+) -> Result<[u8; 32]> {
+    let mut transcript = Vec::with_capacity(32 + TLS_NONCE_LEN + 32 + TLS_NONCE_LEN + 32);
+    transcript.extend_from_slice(client_pub);
+    transcript.extend_from_slice(client_nonce);
+    transcript.extend_from_slice(server_pub);
+    transcript.extend_from_slice(server_nonce);
+    transcript.extend_from_slice(shared_secret);
+    transcript.extend_from_slice(HANDSHAKE_INFO);
+
+    Ok(Sha3_256::digest(transcript).into())
 }
 
 // Send role and session_id as join request
@@ -109,6 +161,7 @@ pub async fn write_encrypted_frame<W: AsyncWriteExt + Unpin>(
     Ok(())
 }
 
+#[inline]
 /// Reads an encrypted frame with 4-byte big-endian length prefix, nonce, ciphertext, and tag,
 /// decrypts it into `mem_pool`, and returns a slice to the plaintext
 pub async fn read_encrypted_frame<'a, R: AsyncReadExt + Unpin>(
@@ -132,6 +185,7 @@ pub async fn read_encrypted_frame<'a, R: AsyncReadExt + Unpin>(
     Ok(&pt[..plaintext_len])
 }
 
+#[inline]
 /// Reads a raw frame with 4-byte big-endian length prefix and payload,
 /// stores it in `mem_pool`, and returns the total frame size
 pub async fn read_raw_frame_into<R: AsyncReadExt + Unpin>(
@@ -152,8 +206,8 @@ pub async fn read_raw_frame_into<R: AsyncReadExt + Unpin>(
     Ok(total)
 }
 
-/// Reads a 4-byte big-endian length prefix and validates it against `max_payload_length`
 #[inline(always)]
+/// Reads a 4-byte big-endian length prefix and validates it against `max_payload_length`
 async fn read_payload_length<R: AsyncReadExt + Unpin>(
     reader: &mut R,
     max_payload_length: usize,

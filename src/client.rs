@@ -10,7 +10,7 @@ use tokio::net::TcpStream;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 
 /// `HydraClient` connects to the relay server as a producer or consumer, performs handshake, and sends/receives encrypted frames.
-/// It maintains an internal memory pool for zero-copy encryption/decryption and buffering.
+/// It maintains an internal memory pool (18 mb) for zero-copy encryption/decryption and buffering.
 /// The `broadcast` method allows producers to send encrypted frames to all connected consumers in the same session,
 /// while the `recv` method allows consumers to receive and decrypt frames from the producer.
 pub struct HydraClient {

@@ -90,3 +90,52 @@ async fn concurrent_multi_consumer_relay() {
         assert_eq!(received, data);
     }
 }
+
+#[tokio::test]
+async fn continuous_stream_relay() {
+    let server_addr = "127.0.0.1:6971".parse::<SocketAddr>().unwrap();
+    let server = HydraServer::bind(&server_addr, None, None, None)
+        .await
+        .unwrap();
+    tokio::spawn(async move { server.run(500).await });
+
+    let session_id = random();
+    let session_key = random();
+
+    let mut producer = HydraClient::connect_producer(server_addr, &session_id, session_key)
+        .await
+        .unwrap();
+
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    let mut consumer = HydraClient::connect_consumer(server_addr, &session_id, session_key)
+        .await
+        .unwrap();
+
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    let message_count = 100;
+
+    let consumer_handle = tokio::spawn(async move {
+        for i in 0..message_count {
+            let expected_payload = format!("live_stream_packet_{}", i).into_bytes();
+
+            let received = tokio::time::timeout(std::time::Duration::from_secs(2), consumer.recv())
+                .await
+                .expect("Consumer timed out waiting for a packet")
+                .expect("Consumer channel closed unexpectedly");
+
+            assert_eq!(received, expected_payload, "Packet mismatch at index {}", i);
+        }
+    });
+
+    for i in 0..message_count {
+        let payload = format!("live_stream_packet_{}", i).into_bytes();
+        producer.broadcast(&payload).await.unwrap();
+
+        // prevents overwhelming the local buffer instantly
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    }
+
+    consumer_handle.await.unwrap();
+}
