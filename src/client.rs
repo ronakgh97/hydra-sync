@@ -1,3 +1,4 @@
+use crate::BUFFER_SIZE;
 use crate::protocol::{
     Role, perform_client_handshake, read_encrypted_frame, write_encrypted_frame, write_join_frame,
 };
@@ -8,19 +9,20 @@ use tokio::io::{AsyncWriteExt, BufReader, BufWriter};
 use tokio::net::TcpStream;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 
-/// ProducerClient connects to the relay server as a producer, performs handshake,
-/// and can broadcast encrypted frames to all connected consumers in the same session.
-pub struct ProducerClient {
+/// `HydraClient` connects to the relay server as a producer or consumer, performs handshake, and sends/receives encrypted frames.
+/// It maintains an internal memory pool for zero-copy encryption/decryption and buffering.
+/// The `broadcast` method allows producers to send encrypted frames to all connected consumers in the same session,
+/// while the `recv` method allows consumers to receive and decrypt frames from the producer.
+pub struct HydraClient {
     session_key: [u8; 32],
-    #[allow(unused)]
     buf_reader: BufReader<OwnedReadHalf>,
     buf_writer: BufWriter<OwnedWriteHalf>,
     mem_pool: BytesMut,
 }
 
-impl ProducerClient {
+impl HydraClient {
     /// Connects to the relay server, performs handshake, and sends a join frame with the producer role and session_id.
-    pub async fn connect(
+    pub async fn connect_producer(
         addr: SocketAddr,
         session_id: &[u8; 64],
         session_key: [u8; 32],
@@ -29,8 +31,8 @@ impl ProducerClient {
         stream.set_nodelay(true)?;
 
         let (reader, writer) = stream.into_split();
-        let mut writer = BufWriter::new(writer);
-        let mut reader = BufReader::new(reader);
+        let mut writer = BufWriter::with_capacity(BUFFER_SIZE, writer);
+        let mut reader = BufReader::with_capacity(BUFFER_SIZE, reader);
         let transport_key = perform_client_handshake(&mut reader, &mut writer).await?;
         let mut mem_pool = BytesMut::with_capacity(1024 * 1024 * 18);
         write_join_frame(
@@ -61,26 +63,8 @@ impl ProducerClient {
         .await
     }
 
-    pub async fn close(&mut self) -> Result<()> {
-        self.buf_writer.flush().await?;
-        self.buf_writer.shutdown().await?;
-        Ok(())
-    }
-}
-
-/// ConsumerClient connects to the relay server as a consumer, performs handshake,
-/// and can receive encrypted frames broadcast by the producer in the same session.
-pub struct ConsumerClient {
-    session_key: [u8; 32],
-    buf_reader: BufReader<OwnedReadHalf>,
-    #[allow(unused)]
-    buf_writer: BufWriter<OwnedWriteHalf>,
-    mem_pool: BytesMut,
-}
-
-impl ConsumerClient {
     /// Connects to the relay server, performs handshake, and sends a join frame with the consumer role and session_id.
-    pub async fn connect(
+    pub async fn connect_consumer(
         addr: SocketAddr,
         session_id: &[u8; 64],
         session_key: [u8; 32],
@@ -88,8 +72,8 @@ impl ConsumerClient {
         let stream = TcpStream::connect(addr).await?;
         stream.set_nodelay(true)?;
         let (reader, writer) = stream.into_split();
-        let mut writer = BufWriter::new(writer);
-        let mut reader = BufReader::new(reader);
+        let mut writer = BufWriter::with_capacity(BUFFER_SIZE, writer);
+        let mut reader = BufReader::with_capacity(BUFFER_SIZE, reader);
 
         let transport_key = perform_client_handshake(&mut reader, &mut writer).await?;
         let mut mem_pool = BytesMut::with_capacity(1024 * 1024 * 18);
@@ -110,7 +94,8 @@ impl ConsumerClient {
         })
     }
 
-    /// Receives the next encrypted frame from the producer, decrypts it, and returns the plaintext data as a Vec<u8>.
+    /// Receives the next encrypted frame from the producer, decrypts it, and returns the plaintext data as a byte slice.
+    /// The returned slice is valid until the next call to `recv` or `broadcast`, which may reuse the internal memory pool buffer.
     pub async fn recv(&mut self) -> Result<&[u8]> {
         let decrypted =
             read_encrypted_frame(&mut self.buf_reader, &self.session_key, &mut self.mem_pool)
@@ -118,6 +103,7 @@ impl ConsumerClient {
         Ok(decrypted)
     }
 
+    /// Closes the client connection gracefully by flushing and shutting down the writer (proper FIN).
     pub async fn close(&mut self) -> Result<()> {
         self.buf_writer.flush().await?;
         self.buf_writer.shutdown().await?;

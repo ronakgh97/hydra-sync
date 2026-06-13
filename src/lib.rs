@@ -4,4 +4,5 @@ pub(crate) mod protocol;
 pub mod server;
 pub(crate) mod session;
 
+/// Buffer size for `BufReader`
 pub const BUFFER_SIZE: usize = 1024 * 1024 * 6;

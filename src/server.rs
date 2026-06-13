@@ -1,3 +1,4 @@
+use crate::BUFFER_SIZE;
 use crate::protocol::{Role, perform_server_handshake, read_join_frame, read_raw_frame_into};
 use crate::session::Sessions;
 use anyhow::Result;
@@ -8,10 +9,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::broadcast::error::RecvError;
+// TODO; handles backpressure "properly", implement handler traits for invoking user defined fn for some events
 
 /// A light-weight multi-threaded SPMC (Single Producer Multiple Consumer) E2E relay server.
 ///
-/// `RelayServer` implements a zero-copy broadcast relay that:
+/// `HydraServer` implements a zero-copy broadcast relay that:
 /// - Accepts one producer and multiple consumers per session
 /// - Routes data from producer → all connected consumers using Arc-backed `Bytes`
 /// - Handles backpressure and slow consumers with broadcast channel lagging
@@ -21,7 +23,8 @@ use tokio::sync::broadcast::error::RecvError;
 /// - Producer: Sends encrypted frames → broadcast channel
 /// - Consumers: Subscribe to broadcast, receive clones of Arc<Bytes> (zero-copy)
 /// - Sessions: Keyed by 64-byte session_id, one producer per session allowed
-pub struct RelayServer {
+/// - Errors & Logs: Error are predictable and handled gracefully by closing connections and logging without crashing the server
+pub struct HydraServer {
     /// internal tcp listener for accepting incoming connections
     listener: TcpListener,
     /// session management for producers and consumers
@@ -36,21 +39,26 @@ pub struct RelayServer {
     broadcast_capacity: usize,
 }
 
-impl RelayServer {
+impl HydraServer {
     /// Binds the relay server to the specified socket address and initializes internal state
     /// Defaults:
     /// - max_connections: 24
     /// - max_payload_length: 64 MiB
     /// - broadcast_capacity: 256 messages
-    pub async fn bind(addr: &SocketAddr) -> Result<Self> {
+    pub async fn bind(
+        addr: &SocketAddr,
+        max_payload_length: Option<usize>,
+        max_connections: Option<usize>,
+        broadcast_capacity: Option<usize>,
+    ) -> Result<Self> {
         let listener = TcpListener::bind(addr).await?;
         Ok(Self {
             listener,
             sessions: Arc::new(Sessions::init()),
             connections: Arc::new(AtomicUsize::new(0)),
-            max_payload_length: 64 * 1024 * 1024,
-            max_connections: 24,
-            broadcast_capacity: 256,
+            max_payload_length: max_payload_length.unwrap_or(64 * 1024 * 1024),
+            max_connections: max_connections.unwrap_or(24),
+            broadcast_capacity: broadcast_capacity.unwrap_or(256),
         })
     }
 
@@ -103,10 +111,11 @@ impl RelayServer {
         broadcast_capacity: usize,
     ) -> Result<()> {
         stream.set_nodelay(true)?;
+        let mut mem_pool = BytesMut::with_capacity(max_payload_length + 4); // 4 bytes prefix space 
         let (read_h, write_h) = stream.split();
-        let mut writer = BufWriter::new(write_h);
-        let mut reader = BufReader::new(read_h);
-        let mut mem_pool = BytesMut::with_capacity(max_payload_length + 4);
+        let mut writer = BufWriter::with_capacity(BUFFER_SIZE, write_h);
+        let mut reader = BufReader::with_capacity(BUFFER_SIZE, read_h);
+
         let transport_key = perform_server_handshake(&mut reader, &mut writer).await?;
         let (role, session_id) =
             read_join_frame(&mut reader, &transport_key, &mut mem_pool).await?;
@@ -194,7 +203,7 @@ impl RelayServer {
                         Err(RecvError::Lagged(n)) => {
                             let _ = writer.flush().await;
                             let _ = writer.shutdown().await;
-                            eprintln!("Consumer lagged: {n}");
+                            eprintln!("Consumer lagged behind: {n}");
                             break;
                         }
                         Err(RecvError::Closed) => {
