@@ -46,7 +46,7 @@ async fn concurrent_multi_consumer_relay() {
 
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-    let consumer_count = 8;
+    let consumer_count = 16;
     let connect_handles: Vec<_> = (0..consumer_count)
         .map(|_| {
             tokio::spawn(async move {
@@ -104,7 +104,7 @@ async fn continuous_stream_relay() {
 
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-    let message_count = 100;
+    let message_count = 128;
 
     let consumer_handle = tokio::spawn(async move {
         for i in 0..message_count {

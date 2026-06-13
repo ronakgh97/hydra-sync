@@ -10,7 +10,6 @@ readme = "README.md"
 categories = ["network-programming", "security", "asynchronous", "cryptography"]
 keywords = ["relay", "network", "cluster", "spmc", "zero-copy"]
 
-
 [lib]
 name = "hydra_sync"
 path = "src/lib.rs"

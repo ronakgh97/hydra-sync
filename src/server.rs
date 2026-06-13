@@ -6,7 +6,7 @@ use bytes::BytesMut;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
+use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::broadcast::error::RecvError;
 // TODO; handles backpressure "properly", implement handler traits for invoking user defined fn for some events
@@ -120,11 +120,10 @@ impl HydraServer {
     ) -> Result<()> {
         stream.set_nodelay(true)?;
         let mut mem_pool = BytesMut::with_capacity(max_payload_length + 4); // 4 bytes prefix space 
-        let (read_h, write_h) = stream.split();
-        let mut writer = BufWriter::with_capacity(BUFFER_SIZE, write_h);
+        let (read_h, mut writer_raw) = stream.split();
         let mut reader = BufReader::with_capacity(BUFFER_SIZE, read_h);
 
-        let transport_key = perform_server_handshake(&mut reader, &mut writer).await?;
+        let transport_key = perform_server_handshake(&mut reader, &mut writer_raw).await?;
         let (role, session_id) =
             read_join_frame(&mut reader, &transport_key, &mut mem_pool).await?;
 
@@ -141,7 +140,7 @@ impl HydraServer {
                 .await
             }
             Role::Consumer => {
-                Self::run_consumer(&mut reader, &mut writer, sessions, session_id).await
+                Self::run_consumer(&mut reader, &mut writer_raw, sessions, session_id).await
             }
         }
     }
@@ -206,16 +205,16 @@ impl HydraServer {
                                 eprintln!("Consumer write: {e}");
                                 break;
                             }
-                            let _ = writer.flush().await;
+                            // let _ = writer.flush().await;
                         }
                         Err(RecvError::Lagged(n)) => {
-                            let _ = writer.flush().await;
+                            let _ = writer.flush().await; // flush whatever remaining
                             let _ = writer.shutdown().await;
                             eprintln!("Consumer lagged behind: {n}");
                             break;
                         }
                         Err(RecvError::Closed) => {
-                            let _ = writer.flush().await;
+                            let _ = writer.flush().await; // flush whatever b4 exiting
                             let _ = writer.shutdown().await;
                             eprintln!("Producer closed");
                             break;

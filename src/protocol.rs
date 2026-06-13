@@ -6,7 +6,7 @@ use sha3::{Digest, Sha3_256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use x25519_dalek::PublicKey;
 
-const TLS_NONCE_LEN: usize = 72;
+const TLS_NONCE_LEN: usize = 96;
 const HANDSHAKE_INFO: &[u8] =
     concat!("hydra-sync transport key/v", env!("CARGO_PKG_VERSION")).as_bytes();
 

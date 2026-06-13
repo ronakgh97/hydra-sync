@@ -103,6 +103,11 @@ impl HydraClient {
         Ok(decrypted)
     }
 
+    /// Queries the relay server for current status, returns total connected clients and active sessions.
+    pub async fn server_status(&mut self) -> Result<()> {
+        todo!("Implement server status query, returns: total_client_connected, total_sessions");
+    }
+
     /// Closes the client connection gracefully by flushing and shutting down the writer (proper FIN).
     pub async fn close(&mut self) -> Result<()> {
         self.buf_writer.flush().await?;
