@@ -2,7 +2,7 @@ use crate::BUFFER_SIZE;
 use crate::protocol::{
     Role, perform_client_handshake, read_encrypted_frame, write_encrypted_frame, write_join_frame,
 };
-use anyhow::Result;
+use anyhow::{Result, bail};
 use bytes::BytesMut;
 use std::net::SocketAddr;
 use tokio::io::{AsyncWriteExt, BufReader, BufWriter};
@@ -14,6 +14,7 @@ use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 /// The `broadcast` method allows producers to send encrypted frames to all connected consumers in the same session,
 /// while the `recv` method allows consumers to receive and decrypt frames from the producer.
 pub struct HydraClient {
+    role: Role,
     session_key: [u8; 32],
     buf_reader: BufReader<OwnedReadHalf>,
     buf_writer: BufWriter<OwnedWriteHalf>,
@@ -45,6 +46,7 @@ impl HydraClient {
         .await?;
 
         Ok(Self {
+            role: Role::Producer,
             buf_reader: reader,
             buf_writer: writer,
             session_key,
@@ -53,7 +55,11 @@ impl HydraClient {
     }
 
     /// Broadcasts the given data as an encrypted frame to all connected consumers (zero-copy) in the same session.
+    /// `broadcast` is only available for producers and will return an error if called on a consumer client.
     pub async fn broadcast(&mut self, data: &[u8]) -> Result<()> {
+        if self.role != Role::Producer {
+            bail!("broadcast is only available for producers");
+        }
         write_encrypted_frame(
             &mut self.buf_writer,
             data,
@@ -87,6 +93,7 @@ impl HydraClient {
         .await?;
 
         Ok(Self {
+            role: Role::Consumer,
             buf_reader: reader,
             buf_writer: writer,
             session_key,
@@ -96,7 +103,11 @@ impl HydraClient {
 
     /// Receives the next encrypted frame from the producer, decrypts it, and returns the plaintext data as a byte slice.
     /// The returned slice is valid until the next call to `recv` or `broadcast`, which may reuse the internal memory pool buffer.
+    /// `recv` is only available for consumers and will return an error if called on a producer client.
     pub async fn recv(&mut self) -> Result<&[u8]> {
+        if self.role != Role::Consumer {
+            bail!("recv is only available for consumers");
+        }
         let decrypted =
             read_encrypted_frame(&mut self.buf_reader, &self.session_key, &mut self.mem_pool)
                 .await?;

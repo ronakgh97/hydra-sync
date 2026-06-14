@@ -13,6 +13,7 @@ const HANDSHAKE_INFO: &[u8] =
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
+    Admin = 0x00,
     Producer = 0x01,
     Consumer = 0x02,
 }
@@ -22,6 +23,7 @@ impl Role {
     /// Converts an u8 to a Role, returning an error if the value is invalid
     pub fn from_u8(val: u8) -> Result<Self> {
         match val {
+            0x00 => Ok(Role::Admin),
             0x01 => Ok(Self::Producer),
             0x02 => Ok(Self::Consumer),
             _ => bail!("Unknown role: {:#04x}", val),

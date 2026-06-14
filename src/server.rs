@@ -142,6 +142,7 @@ impl HydraServer {
             Role::Consumer => {
                 Self::run_consumer(&mut reader, &mut writer_raw, sessions, session_id).await
             }
+            Role::Admin => Ok(()), // todo; implement this
         }
     }
 
@@ -157,7 +158,7 @@ impl HydraServer {
         let tx = sessions.try_register_producer(session_id, broadcast_capacity)?;
 
         loop {
-            // read from client read stream
+            // read from client read stream (just channel, no intervention)
             let n = match read_raw_frame_into(reader, &mut mem_pool, max_payload_length).await {
                 Ok(n) => n,
                 Err(e) => {
@@ -180,6 +181,7 @@ impl HydraServer {
         Ok(())
     }
 
+    /// Handles consumer clients: subscribes to the session's broadcast channel and writes received data to the client
     async fn run_consumer<R: AsyncReadExt + Unpin, W: AsyncWriteExt + Unpin>(
         reader: &mut R,
         writer: &mut W,

@@ -78,7 +78,7 @@
 //! high-throughput scenarios.
 //!
 pub mod client;
-pub(crate) mod crypto;
+pub mod crypto;
 pub(crate) mod protocol;
 pub mod server;
 pub(crate) mod session;

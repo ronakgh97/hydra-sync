@@ -11,7 +11,6 @@ pub const TAG_LEN: usize = 16;
 /// Encrypt `data` with a 32-byte `key` using AES-256-GCM,
 /// returns a byte vector containing the nonce, ciphertext, and tag or an error if encryption fails.
 #[inline]
-#[allow(unused)]
 pub fn encrypt_data(data: &[u8], key: &[u8; 32]) -> Result<Vec<u8>> {
     // generate random 12-byte nonce
     let mut nonce = [0u8; NONCE_LEN];
@@ -33,7 +32,6 @@ pub fn encrypt_data(data: &[u8], key: &[u8; 32]) -> Result<Vec<u8>> {
 /// Decrypt `data` that was encrypted with [`encrypt_data`],
 /// returns the original plaintext or an error if decryption fails.
 #[inline]
-#[allow(unused)]
 pub fn decrypt_data(data: &[u8], key: &[u8; 32]) -> Result<Vec<u8>> {
     if data.len() < NONCE_LEN + TAG_LEN {
         anyhow::bail!("Ciphertext too short");
@@ -50,10 +48,10 @@ pub fn decrypt_data(data: &[u8], key: &[u8; 32]) -> Result<Vec<u8>> {
     Ok(plaintext)
 }
 
-#[inline(always)]
 /// Encrypt `input` into `output` using AES-256-GCM with the provided 32-byte `key`.
 /// The `output` buffer must be at least `input.len() + NONCE_LEN + TAG_LEN` bytes long,
 /// returns the total number of bytes written to `output` (nonce + ciphertext + tag) or an error if encryption fails.
+#[inline(always)]
 pub fn encrypt_into(input: &[u8], output: &mut [u8], key: &[u8; 32]) -> Result<usize> {
     let plaintext_len = input.len();
 
@@ -84,10 +82,10 @@ pub fn encrypt_into(input: &[u8], output: &mut [u8], key: &[u8; 32]) -> Result<u
     Ok(NONCE_LEN + plaintext_len + TAG_LEN)
 }
 
-#[inline(always)]
 /// Decrypt `input` (which should be in the format produced by [`encrypt_into`]) into `output` using AES-256-GCM with the provided 32-byte `key`.
 /// The `output` buffer must  be `input.len() - NONCE_LEN - TAG_LEN` bytes,
 /// returns the number of bytes written to `output` (the length of the decrypted plaintext) or an error if decryption fails.
+#[inline(always)]
 pub fn decrypt_into(input: &[u8], output: &mut [u8], key: &[u8; 32]) -> Result<usize> {
     if input.len() < NONCE_LEN + TAG_LEN {
         anyhow::bail!("Ciphertext too short");
