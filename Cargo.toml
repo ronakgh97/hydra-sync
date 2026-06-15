@@ -1,6 +1,6 @@
 [package]
 name = "hydra-sync"
-version = "1.0.0-beta.3"
+version = "1.0.0-beta.4"
 edition = "2024"
 authors = ["ronakgh {ronakgh97@gmail.com}"]
 description = "Light-weight zero-copy E2E Single Producer Multiple Consumer network cluster library."
@@ -24,4 +24,6 @@ aes-gcm = "0.11.0-rc.4"
 sha3 = "0.12.0"
 chrono = "0.4.45"
 anyhow = "1.0.102"
-# hex = "0.4.3"
+dotenv = "0.15.0"
+colored = "3.1.1"
+hex = "0.4.3"

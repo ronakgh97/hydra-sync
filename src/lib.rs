@@ -79,6 +79,7 @@
 //!
 pub mod client;
 pub mod crypto;
+pub(crate) mod log;
 pub(crate) mod protocol;
 pub mod server;
 pub(crate) mod session;

@@ -1,6 +1,7 @@
 use hydra_sync::client::HydraClient;
 use hydra_sync::server::HydraServer;
 use rand::random;
+use std::{fs, io};
 
 #[tokio::test]
 async fn basic_relay() {
@@ -30,6 +31,8 @@ async fn basic_relay() {
         .unwrap()
         .unwrap();
     assert_eq!(received, data);
+
+    cleanup_log().unwrap();
 }
 
 #[tokio::test]
@@ -82,6 +85,8 @@ async fn concurrent_multi_consumer_relay() {
         let received = handle.await.unwrap();
         assert_eq!(received, data);
     }
+
+    cleanup_log().unwrap();
 }
 
 #[tokio::test]
@@ -128,4 +133,22 @@ async fn continuous_stream_relay() {
     }
 
     consumer_handle.await.unwrap();
+
+    cleanup_log().unwrap();
+}
+
+fn cleanup_log() -> io::Result<()> {
+    for entry in fs::read_dir(".")? {
+        let entry = entry?;
+        let path = entry.path();
+
+        if path.is_file()
+            && let Some(name) = path.file_name()
+            && name.to_string_lossy().ends_with(".log")
+        {
+            fs::remove_file(path)?;
+        }
+    }
+
+    Ok(())
 }

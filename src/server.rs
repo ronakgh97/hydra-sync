@@ -1,6 +1,6 @@
-use crate::BUFFER_SIZE;
 use crate::protocol::{Role, perform_server_handshake, read_join_frame, read_raw_frame_into};
 use crate::session::Sessions;
+use crate::{BUFFER_SIZE, error, info, trace, warn};
 use anyhow::Result;
 use bytes::BytesMut;
 use std::net::SocketAddr;
@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::broadcast::error::RecvError;
-// TODO; handles backpressure "properly", implement handler traits for invoking user defined fn for some events
+// TODO; handles backpressure "properly", implement handler traits for invoking user defined fn for some events, logging can be better.
 
 /// A light-weight multi-threaded SPMC (Single Producer Multiple Consumer) E2E relay server.
 ///
@@ -75,10 +75,15 @@ impl HydraServer {
     /// - Producer errors; If read fails from client or broadcast send fails, the connection is closed and the error is logged.
     /// - Producer errors; If writing to client fails or broadcast lags or closed, the connection is closed and the error is logged.
     /// - EOF check are gracefully handled by closing the connection without logging an error.
+    /// - `LOG_LEVEL` & `LOG_FILE` env vars can be set to control logging verbosity and output file (defaults to `info` level and stdout, not file).
     pub async fn run(self, connections_timeout_ms: u64) -> Result<()> {
         loop {
-            if self.connections.fetch_add(1, Ordering::Acquire) >= self.max_connections {
-                self.connections.fetch_sub(1, Ordering::Release);
+            if self.connections.fetch_add(1, Ordering::Relaxed) >= self.max_connections {
+                self.connections.fetch_sub(1, Ordering::Relaxed);
+                warn!(
+                    "Max connections reached: {}, waiting {} ms before retrying",
+                    self.max_connections, connections_timeout_ms
+                );
                 tokio::time::sleep(std::time::Duration::from_millis(connections_timeout_ms)).await;
                 continue;
             }
@@ -90,6 +95,7 @@ impl HydraServer {
                     let connections = Arc::clone(&self.connections);
                     // spawn handler thread
                     tokio::spawn(async move {
+                        trace!("Accepted connection from: {}", peer_addr);
                         if let Err(e) = Self::handle_connection(
                             stream,
                             sessions,
@@ -98,14 +104,14 @@ impl HydraServer {
                         )
                         .await
                         {
-                            eprintln!("Connection handling error: {} from: {}", e, peer_addr);
+                            error!("Connection handling error: {} from: {}", e, peer_addr);
                         }
                         connections.fetch_sub(1, Ordering::Release);
                     });
                 }
                 Err(e) => {
                     self.connections.fetch_sub(1, Ordering::Release);
-                    eprintln!("Connection accepting error: {}", e);
+                    error!("Connection accepting error: {}", e);
                 }
             }
         }
@@ -120,6 +126,7 @@ impl HydraServer {
     ) -> Result<()> {
         stream.set_nodelay(true)?;
         let mut mem_pool = BytesMut::with_capacity(max_payload_length + 4); // 4 bytes prefix space 
+        let peer_addr = stream.peer_addr()?;
         let (read_h, mut writer_raw) = stream.split();
         let mut reader = BufReader::with_capacity(BUFFER_SIZE, read_h);
 
@@ -129,10 +136,16 @@ impl HydraServer {
 
         match role {
             Role::Producer => {
+                info!(
+                    "Producer addr: {} joined session: {}",
+                    peer_addr,
+                    hex::encode(session_id)
+                );
                 Self::run_producer(
                     &mut reader,
                     sessions,
                     session_id,
+                    &peer_addr,
                     mem_pool,
                     max_payload_length,
                     broadcast_capacity,
@@ -140,7 +153,19 @@ impl HydraServer {
                 .await
             }
             Role::Consumer => {
-                Self::run_consumer(&mut reader, &mut writer_raw, sessions, session_id).await
+                info!(
+                    "Consumer addr: {} joined session: {}",
+                    peer_addr,
+                    hex::encode(session_id)
+                );
+                Self::run_consumer(
+                    &mut reader,
+                    &mut writer_raw,
+                    sessions,
+                    session_id,
+                    &peer_addr,
+                )
+                .await
             }
             Role::Admin => Ok(()), // todo; implement this
         }
@@ -151,6 +176,7 @@ impl HydraServer {
         reader: &mut R,
         sessions: Arc<Sessions>,
         session_id: [u8; 64],
+        client_addr: &SocketAddr,
         mut mem_pool: BytesMut,
         max_payload_length: usize,
         broadcast_capacity: usize,
@@ -163,7 +189,11 @@ impl HydraServer {
                 Ok(n) => n,
                 Err(e) => {
                     tx.closed().await;
-                    eprintln!("Producer read: {e}");
+                    error!(
+                        "Producer addr: {} session: {} read: {e}",
+                        client_addr,
+                        hex::encode(session_id)
+                    );
                     break;
                 }
             };
@@ -171,7 +201,11 @@ impl HydraServer {
             // write to broadcast channel
             if let Err(e) = tx.send(mem_pool.split_to(n).freeze()) {
                 tx.closed().await; // close channel to signal consumers
-                eprintln!("Producer broadcast: {e}");
+                warn!(
+                    "Producer addr: {} session: {} broadcast: {e}",
+                    client_addr,
+                    hex::encode(session_id)
+                );
                 break;
             }
         }
@@ -187,6 +221,7 @@ impl HydraServer {
         writer: &mut W,
         sessions: Arc<Sessions>,
         session_id: [u8; 64],
+        client_addr: &SocketAddr,
     ) -> Result<()> {
         let tx = sessions
             .get_for_consumer(session_id)
@@ -204,7 +239,7 @@ impl HydraServer {
                             // try writing to client read stream first or fail
                             if let Err(e) = writer.write_all(&data).await {
                                 let _ = writer.shutdown().await;
-                                eprintln!("Consumer write: {e}");
+                                error!("Consumer addr: {} session: {} write: {e}", client_addr, hex::encode(session_id));
                                 break;
                             }
                             // let _ = writer.flush().await;
@@ -212,13 +247,13 @@ impl HydraServer {
                         Err(RecvError::Lagged(n)) => {
                             let _ = writer.flush().await; // flush whatever remaining
                             let _ = writer.shutdown().await;
-                            eprintln!("Consumer lagged behind: {n}");
+                            warn!("Consumer addr: {} session: {} lagged by {n} messages", client_addr, hex::encode(session_id));
                             break;
                         }
                         Err(RecvError::Closed) => {
                             let _ = writer.flush().await; // flush whatever b4 exiting
                             let _ = writer.shutdown().await;
-                            eprintln!("Producer closed");
+                            info!("Producer for session: {} closed, consumer addr: {}", hex::encode(session_id), client_addr);
                             break;
                         },
                     }
@@ -227,7 +262,7 @@ impl HydraServer {
                     match result {
                         Ok(0) => break, // eof check
                         Err(e) => {
-                            eprintln!("Consumer read: {e}");
+                            error!("Consumer addr: {} session: {} read: {e}", client_addr, hex::encode(session_id));
                             break;
                         }
                         _ => {}
