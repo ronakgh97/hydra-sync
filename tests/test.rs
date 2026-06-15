@@ -1,4 +1,4 @@
-use hydra_sync::client::HydraClient;
+use hydra_sync::client::{Consumer, HydraClient, Producer};
 use hydra_sync::server::HydraServer;
 use rand::random;
 use std::{fs, io};
@@ -11,13 +11,13 @@ async fn basic_relay() {
     let session_id = random();
     let session_key = random();
 
-    let mut producer = HydraClient::connect_producer(server_addr, &session_id, session_key)
+    let mut producer = HydraClient::<Producer>::connect(server_addr, &session_id, session_key)
         .await
         .unwrap();
 
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-    let mut consumer = HydraClient::connect_consumer(server_addr, &session_id, session_key)
+    let mut consumer = HydraClient::<Consumer>::connect(server_addr, &session_id, session_key)
         .await
         .unwrap();
 
@@ -43,7 +43,7 @@ async fn concurrent_multi_consumer_relay() {
     let session_id = random();
     let session_key = random();
 
-    let mut producer = HydraClient::connect_producer(server_addr, &session_id, session_key)
+    let mut producer = HydraClient::<Producer>::connect(server_addr, &session_id, session_key)
         .await
         .unwrap();
 
@@ -53,7 +53,7 @@ async fn concurrent_multi_consumer_relay() {
     let connect_handles: Vec<_> = (0..consumer_count)
         .map(|_| {
             tokio::spawn(async move {
-                HydraClient::connect_consumer(server_addr, &session_id, session_key).await
+                HydraClient::<Consumer>::connect(server_addr, &session_id, session_key).await
             })
         })
         .collect();
@@ -97,13 +97,13 @@ async fn continuous_stream_relay() {
     let session_id = random();
     let session_key = random();
 
-    let mut producer = HydraClient::connect_producer(server_addr, &session_id, session_key)
+    let mut producer = HydraClient::<Producer>::connect(server_addr, &session_id, session_key)
         .await
         .unwrap();
 
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-    let mut consumer = HydraClient::connect_consumer(server_addr, &session_id, session_key)
+    let mut consumer = HydraClient::<Consumer>::connect(server_addr, &session_id, session_key)
         .await
         .unwrap();
 
@@ -133,7 +133,6 @@ async fn continuous_stream_relay() {
     }
 
     consumer_handle.await.unwrap();
-
     cleanup_log().unwrap();
 }
 

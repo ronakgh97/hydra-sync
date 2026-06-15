@@ -54,7 +54,7 @@ pub fn init(path: &str) -> Result<(), std::io::Error> {
         .create(true)
         .append(true)
         .open(&timestamped)?;
-    *LOG_FILE.lock().unwrap() = Some(BufWriter::new(file));
+    *LOG_FILE.lock().unwrap() = Some(BufWriter::with_capacity(1024 * 1024, file));
     Ok(())
 }
 

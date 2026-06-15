@@ -13,17 +13,29 @@ use tokio::sync::broadcast::error::RecvError;
 
 /// A light-weight multi-threaded SPMC (Single Producer Multiple Consumer) E2E relay server.
 ///
-/// `HydraServer` implements a zero-copy broadcast relay that:
+/// `HydraServer` implements a zero-copy tokio::broadcast relay that:
 /// - Accepts one producer and multiple consumers per session
 /// - Routes data from producer → all connected consumers using Arc-backed `Bytes`
-/// - Handles backpressure and slow consumers with broadcast channel lagging
+/// - Handles backpressure and slow consumers with broadcast channel `RecvError::Lagged(n)`
 /// - Enforces connection limits and per-payload size constraints
+/// ```no_run
+/// use hydra_sync::server::HydraServer;
 ///
+/// #[tokio::main]
+/// async fn main() {
+/// // choose an OS-assigned port
+///     let (server, addr) = HydraServer::bind_default().await.unwrap();
+///
+///     println!("Server running on: {}", addr);
+///     tokio::spawn(async move{ server.run(500).await });
+/// }
+/// ```
 /// Internals
 /// - Producer: Sends encrypted frames → broadcast channel
 /// - Consumers: Subscribe to broadcast, receive clones of `Arc<Bytes>` (zero-copy)
 /// - Sessions: Keyed by 64-byte session_id, one producer per session allowed
 /// - Errors & Logs: Error are predictable and handled gracefully by closing connections and logging without crashing the server
+///
 pub struct HydraServer {
     /// internal tcp listener for accepting incoming connections
     listener: TcpListener,
