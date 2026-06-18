@@ -1,4 +1,4 @@
-**hydra-sync** is a light-weight zero-copy E2E `one-to-many` SPMC relay network library
+**hydra-sync** is a light-weight zero-copy E2E `one-to-many` SPMC `reliable` relay network library
 
 ```rust
 use hydra_sync::client::{HydraClient, Producer, Consumer};
@@ -34,9 +34,9 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // clean FIN shutdown
-    producer.close().await?; 
+    producer.close().await?;
     consumer.close().await?;
-    
+
     Ok(())
 }
 ```

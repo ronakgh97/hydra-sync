@@ -1,6 +1,6 @@
 [package]
 name = "hydra-sync"
-version = "1.0.0-beta.5"
+version = "1.0.0-beta.6"
 edition = "2024"
 authors = ["ronakgh {ronakgh97@gmail.com}"]
 description = "Light-weight zero-copy E2E Single Producer Multiple Consumer network cluster library."
@@ -14,8 +14,14 @@ keywords = ["relay", "network", "cluster", "spmc", "zero-copy"]
 name = "hydra_sync"
 path = "src/lib.rs"
 
+[[bench]]
+name = "bencher"
+path = "bench/bench.rs"
+harness = false
+
 [dependencies]
 tokio = { version = "1.52.3", features = ["full"] }
+# bus = "2.4.1"
 bytes = "1.11.1"
 dashmap = "7.0.0-rc2"
 rand = "0.10.1"

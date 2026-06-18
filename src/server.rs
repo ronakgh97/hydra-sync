@@ -6,6 +6,7 @@ use bytes::BytesMut;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::broadcast::error::RecvError;
@@ -13,10 +14,10 @@ use tokio::sync::broadcast::error::RecvError;
 
 /// A light-weight multi-threaded SPMC (Single Producer Multiple Consumer) E2E relay server.
 ///
-/// `HydraServer` implements a zero-copy tokio::broadcast relay that:
+/// `HydraServer` implements a zero-copy [tokio::broadcast](https://docs.rs/tokio/latest/tokio/sync/broadcast/index.html) relay that:
 /// - Accepts one producer and multiple consumers per session
 /// - Routes data from producer → all connected consumers using Arc-backed `Bytes`
-/// - Handles backpressure and slow consumers with broadcast channel `RecvError::Lagged(n)`
+/// - Handles backpressure and slow consumers with broadcast channel `RecvError::Lagged(n)` and slowing down producers scaled with channel buffer
 /// - Enforces connection limits and per-payload size constraints
 /// ```no_run
 /// use hydra_sync::server::HydraServer;
@@ -48,7 +49,7 @@ pub struct HydraServer {
     /// maximum allowed payload size for incoming frames to prevent abuse
     max_payload_length: usize,
     /// capacity of the broadcast channel for each session to handle backpressure
-    broadcast_capacity: usize,
+    max_channel_capacity: usize,
 }
 
 impl HydraServer {
@@ -56,7 +57,7 @@ impl HydraServer {
     /// - addr: OS-assigned port
     /// - max_connections: 32
     /// - max_payload_length: 64 MiB
-    /// - broadcast_capacity: 256 messages
+    /// - max_channel_capacity: 256 messages
     pub async fn bind_default() -> Result<(Self, SocketAddr)> {
         let addr = &"127.0.0.1:0".parse::<SocketAddr>()?;
         let server = HydraServer::bind(addr, 64 * 1024 * 1024, 32, 256).await?;
@@ -69,7 +70,7 @@ impl HydraServer {
         addr: &SocketAddr,
         max_payload_length: usize,
         max_connections: usize,
-        broadcast_capacity: usize,
+        max_channel_capacity: usize,
     ) -> Result<Self> {
         let listener = TcpListener::bind(addr).await?;
         Ok(Self {
@@ -78,7 +79,7 @@ impl HydraServer {
             connections: Arc::new(AtomicUsize::new(0)),
             max_payload_length,
             max_connections,
-            broadcast_capacity,
+            max_channel_capacity,
         })
     }
 
@@ -96,7 +97,7 @@ impl HydraServer {
                     "Max connections reached: {}, waiting {} ms before retrying",
                     self.max_connections, connections_timeout_ms
                 );
-                tokio::time::sleep(std::time::Duration::from_millis(connections_timeout_ms)).await;
+                tokio::time::sleep(Duration::from_millis(connections_timeout_ms)).await;
                 continue;
             }
 
@@ -112,7 +113,7 @@ impl HydraServer {
                             stream,
                             sessions,
                             self.max_payload_length,
-                            self.broadcast_capacity,
+                            self.max_channel_capacity,
                         )
                         .await
                         {
@@ -137,7 +138,7 @@ impl HydraServer {
         broadcast_capacity: usize,
     ) -> Result<()> {
         stream.set_nodelay(true)?;
-        let mut mem_pool = BytesMut::with_capacity(max_payload_length + 4); // 4 bytes prefix space 
+        let mut mem_pool = BytesMut::with_capacity(max_payload_length + 4); // 4 bytes prefix space
         let peer_addr = stream.peer_addr()?;
         let (read_h, mut writer_raw) = stream.split();
         let mut reader = BufReader::with_capacity(BUFFER_SIZE, read_h);
@@ -195,23 +196,33 @@ impl HydraServer {
     ) -> Result<()> {
         let tx = sessions.try_register_producer(session_id, broadcast_capacity)?;
 
+        const MAX_WAIT_MS: u64 = 12;
+
         loop {
             // read from client read stream (just channel, no intervention)
-            let n = match read_raw_frame_into(reader, &mut mem_pool, max_payload_length).await {
-                Ok(n) => n,
-                Err(e) => {
-                    tx.closed().await;
-                    error!(
-                        "Producer addr: {} session: {} read: {e}",
-                        client_addr,
-                        hex::encode(session_id)
-                    );
-                    break;
-                }
-            };
+            let frame_len =
+                match read_raw_frame_into(reader, &mut mem_pool, max_payload_length).await {
+                    Ok(n) => n,
+                    Err(e) => {
+                        tx.closed().await;
+                        error!(
+                            "Producer addr: {} session: {} read: {e}",
+                            client_addr,
+                            hex::encode(session_id)
+                        );
+                        break;
+                    }
+                };
+
+            // TODO; change to this!!!
+            tokio::time::sleep(Duration::from_millis(
+                MAX_WAIT_MS * (frame_len / broadcast_capacity) as u64,
+            ))
+            .await;
 
             // write to broadcast channel
-            if let Err(e) = tx.send(mem_pool.split_to(n).freeze()) {
+            let send_frame = mem_pool.split_to(frame_len).freeze();
+            if let Err(e) = tx.send(send_frame) {
                 tx.closed().await; // close channel to signal consumers
                 warn!(
                     "Producer addr: {} session: {} broadcast: {e}",

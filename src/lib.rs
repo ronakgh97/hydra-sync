@@ -3,7 +3,7 @@
 //! `hydra-sync` is a high-performance, end-to-end encrypted relay library for single producer,
 //! multiple consumer (SPMC) network architectures. It provides a simple yet powerful abstraction
 //! for building distributed systems where one producer broadcasts encrypted data to many consumers
-//! with minimal latency and memory overhead.
+//! with minimal latency, memory overhead while handling slow clients.
 //!
 //! ### Overview
 //!
@@ -57,7 +57,7 @@
 //!
 //!        // `data` borrows from `consumer`'s internal memory pool and is
 //!        // only valid until the next `recv()` call.
-//!        // Copy it out (e.g. `data.to_vec()`) if you need to keep it longer.
+//!        // Copy it out if you need to keep it longer.
 //!        break;
 //!     }
 //!     producer.close().await?; // clean shutdown
@@ -80,6 +80,7 @@ pub mod client;
 pub mod crypto;
 pub(crate) mod log;
 pub(crate) mod protocol;
+mod ring;
 pub mod server;
 pub(crate) mod session;
 
