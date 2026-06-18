@@ -40,3 +40,15 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 ```
+
+**some issue with using `tokio::mpsc & broadcast channel` for streaming service or general purpose relay cluster**
+the naive way is use tokio::broadcast::channel(big_capacity), it stays simple, just a ring buffer
+you drop client when they lagged or closed, but we want `SPEED BABY` and reliability, to achieve that we have few options 
+you use `unbounded channel (time drop)` and with some few tweaks, you make it resizable `on demand`, now `"resizable"` can many factors, mainly two
+because we want to stop fast producer and let slow client pace up, so we do tokio::sleep, based on some `"X"`, X can be channel size, 
+some ratio or anything that is related to consumer `.recv()` (**SPOILER: IT'S HARD TO FIND THAT 'X', 
+BECAUSE WE CANT JUST APPROX IT, IT MUST BE FINE-TUNED, ACCORDING TO CHANNEL RESIZE LOGIC**), 
+and for consumer we increase buffer size, which needs `mutex::lock`, so it became very fragile in the end,
+or you never do `resize` and just throttle producer, that's works very well for most predictable cases. or you do
+`disk write temporarily` which is most clean way to do it, `slowest consumer` never drops, producer can be `fast as fuck`, but you lose latency
+> IN NUTSHELL, MANAGE CHANNEL SIZE AND THROTTLING CAREFULLY, OR WRITE TO DISK AND CALL IT DAY
