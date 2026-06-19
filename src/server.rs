@@ -10,15 +10,15 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::broadcast::error::RecvError;
-// TODO; handles backpressure "properly", implement handler traits for invoking user defined fn for some events, logging can be better.
 
 /// A light-weight multi-threaded SPMC (Single Producer Multiple Consumer) E2E relay server.
 ///
-/// `HydraServer` implements a zero-copy [tokio::broadcast](https://docs.rs/tokio/latest/tokio/sync/broadcast/index.html) relay that:
-/// - Accepts one producer and multiple consumers per session
-/// - Routes data from producer → all connected consumers using Arc-backed `Bytes`
-/// - Handles backpressure and slow consumers with broadcast channel `RecvError::Lagged(n)` and slowing down producers scaled with channel buffer
+/// `HydraServer` implements a **minimal-copy** [tokio::broadcast](https://docs.rs/tokio/latest/tokio/sync/broadcast/index.html) relay that:
+/// - Accepts one producer and multiple consumers per concurrent sessions
+/// - Routes data from producer → all connected consumers using `Arc<Bytes>`
+/// - Handles slow clients smartly using [`OverflowChannelMode`](crate::channel::OverflowChannelMode)
 /// - Enforces connection limits and per-payload size constraints
+///
 /// ```no_run
 /// use hydra_sync::server::HydraServer;
 ///
@@ -49,7 +49,7 @@ pub struct HydraServer {
     /// maximum allowed payload size for incoming frames to prevent abuse
     max_payload_length: usize,
     /// capacity of the broadcast channel for each session to handle backpressure
-    max_channel_capacity: usize,
+    channel_capacity: usize,
 }
 
 impl HydraServer {
@@ -57,7 +57,7 @@ impl HydraServer {
     /// - addr: OS-assigned port
     /// - max_connections: 32
     /// - max_payload_length: 64 MiB
-    /// - max_channel_capacity: 256 messages
+    /// - channel_capacity: 256 messages per consumer
     pub async fn bind_default() -> Result<(Self, SocketAddr)> {
         let addr = &"127.0.0.1:0".parse::<SocketAddr>()?;
         let server = HydraServer::bind(addr, 64 * 1024 * 1024, 32, 256).await?;
@@ -70,7 +70,7 @@ impl HydraServer {
         addr: &SocketAddr,
         max_payload_length: usize,
         max_connections: usize,
-        max_channel_capacity: usize,
+        channel_capacity: usize,
     ) -> Result<Self> {
         let listener = TcpListener::bind(addr).await?;
         Ok(Self {
@@ -79,25 +79,25 @@ impl HydraServer {
             connections: Arc::new(AtomicUsize::new(0)),
             max_payload_length,
             max_connections,
-            max_channel_capacity,
+            channel_capacity,
         })
     }
 
     /// Main server loop to accept incoming connections, spawn thread handlers, perform handshakes & session creation
-    /// - `connections_timeout_ms` is the delay before client retries to accept new connections on server when the limit is reached
+    /// - `accept_timeout_ms` is the delay before client retries to accept new connections on server when the limit is reached
     /// - Producer errors; If read fails from client or broadcast send fails, the connection is closed and the error is logged.
     /// - Producer errors; If writing to client fails or broadcast lags or closed, the connection is closed and the error is logged.
     /// - EOF check are gracefully handled by closing the connection without logging an error.
     /// - `LOG_LEVEL` & `LOG_FILE` env vars can be set to control logging verbosity and output file (defaults to `info` level and stdout, not file).
-    pub async fn run(self, connections_timeout_ms: u64) -> Result<()> {
+    pub async fn run(self, accept_timeout_ms: u64) -> Result<()> {
         loop {
             if self.connections.fetch_add(1, Ordering::Relaxed) >= self.max_connections {
                 self.connections.fetch_sub(1, Ordering::Relaxed);
                 warn!(
                     "Max connections reached: {}, waiting {} ms before retrying",
-                    self.max_connections, connections_timeout_ms
+                    self.max_connections, accept_timeout_ms
                 );
-                tokio::time::sleep(Duration::from_millis(connections_timeout_ms)).await;
+                tokio::time::sleep(Duration::from_millis(accept_timeout_ms)).await;
                 continue;
             }
 
@@ -113,7 +113,7 @@ impl HydraServer {
                             stream,
                             sessions,
                             self.max_payload_length,
-                            self.max_channel_capacity,
+                            self.channel_capacity,
                         )
                         .await
                         {
@@ -135,7 +135,7 @@ impl HydraServer {
         mut stream: TcpStream,
         sessions: Arc<Sessions>,
         max_payload_length: usize,
-        broadcast_capacity: usize,
+        channel_capacity: usize,
     ) -> Result<()> {
         stream.set_nodelay(true)?;
         let mut mem_pool = BytesMut::with_capacity(max_payload_length + 4); // 4 bytes prefix space
@@ -159,9 +159,9 @@ impl HydraServer {
                     sessions,
                     session_id,
                     &peer_addr,
-                    mem_pool,
+                    &mut mem_pool,
                     max_payload_length,
-                    broadcast_capacity,
+                    channel_capacity,
                 )
                 .await
             }
@@ -180,7 +180,7 @@ impl HydraServer {
                 )
                 .await
             }
-            Role::Admin => Ok(()), // todo; implement this
+            Role::Admin => Ok(()), // TODO; implement this
         }
     }
 
@@ -190,38 +190,37 @@ impl HydraServer {
         sessions: Arc<Sessions>,
         session_id: [u8; 64],
         client_addr: &SocketAddr,
-        mut mem_pool: BytesMut,
+        mem_pool: &mut BytesMut,
         max_payload_length: usize,
-        broadcast_capacity: usize,
+        channel_capacity: usize,
     ) -> Result<()> {
-        let tx = sessions.try_register_producer(session_id, broadcast_capacity)?;
+        let tx = sessions.try_register_producer(session_id, channel_capacity)?;
 
-        const MAX_WAIT_MS: u64 = 12;
+        const MAX_WAIT_MS: u64 = 22;
 
         loop {
             // read from client read stream (just channel, no intervention)
-            let frame_len =
-                match read_raw_frame_into(reader, &mut mem_pool, max_payload_length).await {
-                    Ok(n) => n,
-                    Err(e) => {
-                        tx.closed().await;
-                        error!(
-                            "Producer addr: {} session: {} read: {e}",
-                            client_addr,
-                            hex::encode(session_id)
-                        );
-                        break;
-                    }
-                };
+            let data_len = match read_raw_frame_into(reader, mem_pool, max_payload_length).await {
+                Ok(n) => n,
+                Err(e) => {
+                    tx.closed().await;
+                    error!(
+                        "Producer addr: {} session: {} read: {e}",
+                        client_addr,
+                        hex::encode(session_id)
+                    );
+                    break;
+                }
+            };
+            let send_frame = mem_pool.split_to(data_len).freeze();
 
-            // TODO; change to this!!!
+            // TODO; change this!!!
             tokio::time::sleep(Duration::from_millis(
-                MAX_WAIT_MS * (frame_len / broadcast_capacity) as u64,
+                MAX_WAIT_MS * (send_frame.len() / channel_capacity) as u64,
             ))
             .await;
 
             // write to broadcast channel
-            let send_frame = mem_pool.split_to(frame_len).freeze();
             if let Err(e) = tx.send(send_frame) {
                 tx.closed().await; // close channel to signal consumers
                 warn!(
@@ -247,7 +246,7 @@ impl HydraServer {
         client_addr: &SocketAddr,
     ) -> Result<()> {
         let tx = sessions
-            .get_for_consumer(session_id)
+            .get_session(session_id)
             .ok_or_else(|| anyhow::anyhow!("Session not found"))?;
 
         let mut rx = tx.subscribe();
@@ -276,7 +275,7 @@ impl HydraServer {
                         Err(RecvError::Closed) => {
                             let _ = writer.flush().await; // flush whatever b4 exiting
                             let _ = writer.shutdown().await;
-                            info!("Producer for session: {} closed, consumer addr: {}", hex::encode(session_id), client_addr);
+                            info!("Producer closed session: {} consumer addr: {}", hex::encode(session_id), client_addr);
                             break;
                         },
                     }

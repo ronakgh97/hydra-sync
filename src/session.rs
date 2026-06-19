@@ -1,3 +1,5 @@
+#[allow(unused)]
+use crate::channel::{ConsumerChannel, ProducerChannel};
 use anyhow::Result;
 use bytes::Bytes;
 use dashmap::DashMap;
@@ -23,7 +25,7 @@ impl Sessions {
     }
 
     /// Tries to register a producer for the given session_id,
-    /// returns an error if a producer is already registered.
+    /// returns an error if a producer is already registered or returns `broadcast::Sender<Bytes>`
     pub fn try_register_producer(
         &self,
         session_id: [u8; 64],
@@ -50,8 +52,8 @@ impl Sessions {
         self.map.remove(&session_id);
     }
 
-    /// Returns a ref clone of the broadcast sender for the given session_id, or None if no producer is registered
-    pub fn get_for_consumer(&self, session_id: [u8; 64]) -> Option<broadcast::Sender<Bytes>> {
+    /// Returns a ref clone of the `broadcast::sender` for the given session_id, or None if no producer is registered
+    pub fn get_session(&self, session_id: [u8; 64]) -> Option<broadcast::Sender<Bytes>> {
         self.map.get(&session_id).map(|r| r.clone()) // ref clone
     }
 }

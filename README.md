@@ -40,6 +40,7 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 ```
+
 #### yapping about ring buffers
 **some issue with using `tokio::mpsc & broadcast channel` for streaming service or general purpose relay cluster**
 the naive way is use tokio::broadcast::channel(big_capacity), it stays simple, just a ring buffer
