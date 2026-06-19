@@ -76,11 +76,11 @@
 //! This zero-copy design minimizes garbage collection pressure and reduces latency for
 //! high-throughput scenarios.
 //!
+pub mod channel;
 pub mod client;
 pub mod crypto;
 pub(crate) mod log;
 pub(crate) mod protocol;
-mod ring;
 pub mod server;
 pub(crate) mod session;
 
